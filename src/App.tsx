@@ -115,7 +115,7 @@ export default function App() {
         await vectorDbService.addDocument(chunk);
       }
       
-      setUploadedDocs(prev => [...prev, { id: documentId, name }]);
+      setUploadedDocs((prev: {id: string, name: string}[]) => [...prev, { id: documentId, name }]);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to upload document');
@@ -127,10 +127,10 @@ export default function App() {
 
   const removeDoc = (id: string) => {
     vectorDbService.removeDocument(id);
-    setUploadedDocs(prev => prev.filter(d => d.id !== id));
+    setUploadedDocs((prev: {id: string, name: string}[]) => prev.filter(d => d.id !== id));
   };
 
-  const currentChat = chats.find(c => c.id === currentChatId) || chats[0];
+  const currentChat = chats.find((c: ChatSession) => c.id === currentChatId) || chats[0];
 
   const { 
     messages, 
@@ -157,7 +157,7 @@ export default function App() {
 
   // Sync messages back to chats
   useEffect(() => {
-    setChats(prev => prev.map(chat => {
+    setChats((prev: ChatSession[]) => prev.map((chat: ChatSession) => {
       if (chat.id === currentChatId) {
         // Only update if messages actually changed to avoid infinite loops
         if (JSON.stringify(chat.messages) === JSON.stringify(messages)) return chat;
@@ -182,15 +182,15 @@ export default function App() {
       messages: [],
       updatedAt: Date.now()
     };
-    setChats(prev => [newChat, ...prev]);
+    setChats((prev: ChatSession[]) => [newChat, ...prev]);
     setCurrentChatId(newChat.id);
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
 
   const deleteChat = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setChats(prev => {
-      const updated = prev.filter(c => c.id !== id);
+    setChats((prev: ChatSession[]) => {
+      const updated = prev.filter((c: ChatSession) => c.id !== id);
       if (updated.length === 0) {
         const newChat = { 
           id: `chat-${crypto.randomUUID()}`, 
@@ -399,8 +399,6 @@ export default function App() {
 
       if (selectedModel.isCloud) {
         setDownloadStatus('Connecting to Gemini Live...');
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}?persona=${livePersona}`;
         
         await geminiLiveService.connect({
           onStateChange: (state) => {

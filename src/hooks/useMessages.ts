@@ -51,7 +51,7 @@ export function useMessages(initialMessages: Omit<Message, 'id' | 'timestamp'>[]
   // Add a complete message at once
   const addMessage = useCallback((role: MessageRole, content: string, image?: string): string => {
     const id = generateId();
-    setMessages(prev => [...prev, {
+    setMessages((prev: Message[]) => [...prev, {
       id,
       role,
       content,
@@ -66,7 +66,7 @@ export function useMessages(initialMessages: Omit<Message, 'id' | 'timestamp'>[]
   const addStreamingMessage = useCallback((role: MessageRole): string => {
     const id = generateId();
     streamingIds.current.add(id);
-    setMessages(prev => [...prev, {
+    setMessages((prev: Message[]) => [...prev, {
       id,
       role,
       content: '',
@@ -78,8 +78,8 @@ export function useMessages(initialMessages: Omit<Message, 'id' | 'timestamp'>[]
 
   // Append a chunk to a streaming message
   const appendToMessage = useCallback((id: string, chunk: string): void => {
-    setMessages(prev =>
-      prev.map(m => m.id === id
+    setMessages((prev: Message[]) =>
+      prev.map((m: Message) => m.id === id
         ? { ...m, content: m.content + chunk }
         : m
       )
@@ -88,8 +88,8 @@ export function useMessages(initialMessages: Omit<Message, 'id' | 'timestamp'>[]
 
   // Replace full content of an existing message
   const updateMessage = useCallback((id: string, content: string, isStreaming = false): void => {
-    setMessages(prev =>
-      prev.map(m => m.id === id
+    setMessages((prev: Message[]) =>
+      prev.map((m: Message) => m.id === id
         ? { ...m, content, isStreaming }
         : m
       )
@@ -99,8 +99,8 @@ export function useMessages(initialMessages: Omit<Message, 'id' | 'timestamp'>[]
   // Mark a streaming message as complete
   const finalizeMessage = useCallback((id: string): void => {
     streamingIds.current.delete(id);
-    setMessages(prev =>
-      prev.map(m => m.id === id
+    setMessages((prev: Message[]) =>
+      prev.map((m: Message) => m.id === id
         ? { ...m, isStreaming: false }
         : m
       )

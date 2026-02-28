@@ -19,8 +19,29 @@ class WebLLMService {
       onProgress(report.progress, report.text);
     };
 
+    const modelList: webllm.ModelRecord[] = [
+      {
+        model: "https://huggingface.co/mlc-ai/Qwen2-VL-2B-Instruct-q4f16_1-MLC",
+        model_id: "Qwen2-VL-2B-Instruct-q4f16_1-MLC",
+        model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/qwen2_vl/Qwen2-VL-2B-Instruct-q4f16_1-ctx2k-webgpu.wasm",
+      },
+      {
+        model: "https://huggingface.co/mlc-ai/gemma-2-2b-it-q4f16_1-MLC",
+        model_id: "gemma-2-2b-it-q4f16_1-MLC",
+        model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/gemma2/gemma-2-2b-it-q4f16_1-ctx2k-webgpu.wasm",
+      }
+    ];
+
+    const appConfig: webllm.AppConfig = {
+      model_list: [
+        ...(webllm.prebuiltAppConfig?.model_list || []),
+        ...modelList,
+      ],
+    };
+
     this.engine = await webllm.CreateMLCEngine(modelId, {
       initProgressCallback,
+      appConfig,
     });
     this.currentModelId = modelId;
   }
