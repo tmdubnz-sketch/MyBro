@@ -6,6 +6,13 @@ export interface Message {
   timestamp: number;
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  messages: Message[];
+  updatedAt: number;
+}
+
 export interface ModelConfig {
   id: string;
   name: string;
@@ -18,17 +25,9 @@ export interface ModelConfig {
 
 export const AVAILABLE_MODELS: ModelConfig[] = [
   {
-    id: "gemini-live-riri",
-    name: "Riri Live Audio",
-    description: "Ultra-low latency cloud model with native voice-to-voice.",
-    size: "Cloud",
-    family: 'gemini',
-    isCloud: true
-  },
-  {
-    id: "gemini-live-amo",
-    name: "Amo Live Audio",
-    description: "Ultra-low latency cloud model with native voice-to-voice (Male).",
+    id: "gemini-live-chat",
+    name: "Online Mic Chat",
+    description: "Real-time voice conversation with Amo or Riri.",
     size: "Cloud",
     family: 'gemini',
     isCloud: true
@@ -39,20 +38,6 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
     description: "Google's lightweight, state-of-the-art model.",
     size: "1.6 GB",
     family: 'gemma'
-  },
-  {
-    id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
-    name: "Amo 1.5B",
-    description: "Alibaba's highly capable small language model.",
-    size: "1.1 GB",
-    family: 'qwen'
-  },
-  {
-    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
-    name: "Amo 0.5B",
-    description: "Ultra-lightweight model for fast performance.",
-    size: "0.4 GB",
-    family: 'qwen'
   },
   {
     id: "Qwen2-VL-2B-Instruct-q4f16_1-MLC",

@@ -1,181 +1,311 @@
-import { GoogleGenAI, LiveServerMessage, Modality } from "@google/genai";
+// src/services/geminiLiveService.ts
+// WebSocket client for Gemini Live — relayed via Supabase Edge Function
+//
+// Usage in your component:
+//   import { geminiLiveService } from './geminiLiveService';
+//   await geminiLiveService.connect({ onTranscript, onStateChange, onError });
 
-export class GeminiLiveService {
-  private ai: GoogleGenAI;
-  private session: any = null;
-  private audioContext: AudioContext | null = null;
-  private mediaStream: MediaStream | null = null;
-  private processor: ScriptProcessorNode | null = null;
-  private source: MediaStreamAudioSourceNode | null = null;
-  
-  private playbackContext: AudioContext | null = null;
-  private nextPlayTime: number = 0;
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
-  public onStateChange?: (state: 'connecting' | 'connected' | 'disconnected' | 'error') => void;
+export interface GeminiLiveConfig {
+  onTranscript?: (text: string, role: 'user' | 'assistant') => void;
+  onStateChange?: (state: ConnectionState) => void;
+  onError?: (error: Error) => void;
+}
 
+// ─── Supabase config ──────────────────────────────────────────────────────────
+// WS URL = wss://<project>.supabase.co/functions/v1/<function-name>
+// Auth   = publishable key passed as ?apikey= query param
+//          (WebSocket handshake doesn't support custom headers in browsers)
+const SUPABASE_PROJECT = 'hduqmgzcpazehngrkemo';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qoz4oUbM8qu1WnN22Hm7nA_G9A7XkGX';
+const SUPABASE_WS_URL =
+  `wss://${SUPABASE_PROJECT}.supabase.co/functions/v1/gemini-live` +
+  `?apikey=${SUPABASE_PUBLISHABLE_KEY}`;
+
+// ─── Inline AudioWorklet ──────────────────────────────────────────────────────
+// Loaded as a blob URL — no separate .js file needed, works around CSP.
+const WORKLET_CODE = `
+class AudioCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
+    super();
+    this._buffer = [];
+    this._bufferSize = 4096;
+  }
+  process(inputs) {
+    const input = inputs[0];
+    if (!input || !input[0]) return true;
+    const channel = input[0];
+    this._buffer.push(...channel);
+    while (this._buffer.length >= this._bufferSize) {
+      const chunk = new Float32Array(this._buffer.splice(0, this._bufferSize));
+      const pcm16 = new Int16Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        pcm16[i] = Math.max(-32768, Math.min(32767, chunk[i] * 32768));
+      }
+      this.port.postMessage({ pcm16 }, [pcm16.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('audio-capture-processor', AudioCaptureProcessor);
+`;
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+class GeminiLiveService {
+  private ws: WebSocket | null = null;
+  private audioContext: AudioContext | null = null;
+  private workletNode: AudioWorkletNode | null = null;
+  private micStream: MediaStream | null = null;
+  private sourceNode: MediaStreamAudioSourceNode | null = null;
+  private state: ConnectionState = 'disconnected';
+  private config: GeminiLiveConfig | null = null;
+
+  // ── Public API ──────────────────────────────────────────────────────────────
+
+  async connect(config: GeminiLiveConfig): Promise<void> {
+    if (this.state === 'connecting' || this.state === 'connected') return;
+
+    this.config = config;
+    this.setState('connecting');
+
+    try {
+      // 1. Get mic permission first — clear error if iframe blocks it
+      await this.requestMicPermission();
+      // 2. Init AudioContext after permission granted
+      await this.initAudioContext();
+      // 3. Connect to Supabase Edge Function relay
+      await this.initWebSocket();
+      // 4. Start streaming mic audio
+      await this.startCapture();
+
+      this.setState('connected');
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.error('[GeminiLive] Connection failed:', error.message);
+      this.setState('error');
+      config.onError?.(error);
+      await this.cleanup();
+      throw error;
+    }
   }
 
-  async connect(botName: string = 'Riri') {
+  async disconnect(): Promise<void> {
+    await this.cleanup();
+    this.setState('disconnected');
+  }
+
+  sendText(text: string): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'text', content: text }));
+  }
+
+  interrupt(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'interrupt' }));
+    }
+  }
+
+  getState(): ConnectionState {
+    return this.state;
+  }
+
+  // ── Private ─────────────────────────────────────────────────────────────────
+
+  private async requestMicPermission(): Promise<void> {
     try {
-      this.onStateChange?.('connecting');
-      
-      this.audioContext = new AudioContext({ sampleRate: 16000 });
-      this.playbackContext = new AudioContext({ sampleRate: 24000 });
-      this.nextPlayTime = this.playbackContext.currentTime;
-
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
-      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
-
-      const voiceName = botName === 'Amo' ? 'Charon' : 'Zephyr';
-      
-      let persona = "";
-      if (botName === 'Amo') {
-        persona = "Your name is Te Amo (pronounced Teh Ahh-maw), but you go by the nickname Amo (pronounced Ahh-maw). You have a deeper tone and husky timbre. Your personality is professional, serious, grounded, and highly respectful, carrying the mana (prestige/authority) of your Māori heritage.";
-      } else if (botName === 'Riri') {
-        persona = "Your name is Riana, but you go by the nickname Riri (pronounced re-ree). Your personality is warm, laid-back, friendly, and highly expressive.";
-      } else {
-        persona = `You are ${botName}.`;
-      }
-
-      const systemInstruction = `${persona} You are a helpful AI assistant with a strong New Zealand Māori persona. NEVER use Australian terms like "mate" or "how's it going". Instead, use "bro", "cuz", "whānau" (pronounced faa-no), or "e hoa" (friend, pronounced eh ho-a). Naturally incorporate common Te Reo Māori words and authentic New Zealand slang. IMPORTANT SLANG RULES: Use "Hard" as a quick response to mean "I agree" (short for hardout). Use "As" to mean "definitely" or to emphasize (e.g., "sweet as", "cool as"). Use "Kia ora" (kee-a-or-a) for greetings, "chur" for thanks/agreement, "tu meke" (too meh-keh) for awesome, and "yeah nah" for a polite no. Treat the user with respect and cultural authenticity.`;
-
-      const sessionPromise = this.ai.live.connect({
-        model: "gemini-2.5-flash-native-audio-preview-09-2025",
-        callbacks: {
-          onopen: () => {
-            this.onStateChange?.('connected');
-            this.processor!.onaudioprocess = (e) => {
-              const inputData = e.inputBuffer.getChannelData(0);
-              const pcm16 = new Int16Array(inputData.length);
-              for (let i = 0; i < inputData.length; i++) {
-                let s = Math.max(-1, Math.min(1, inputData[i]));
-                pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-              }
-              
-              const buffer = new ArrayBuffer(pcm16.length * 2);
-              const view = new DataView(buffer);
-              for (let i = 0; i < pcm16.length; i++) {
-                view.setInt16(i * 2, pcm16[i], true);
-              }
-              const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-              
-              sessionPromise.then(session => {
-                session.sendRealtimeInput({
-                  media: { data: base64, mimeType: 'audio/pcm;rate=16000' }
-                });
-              });
-            };
-            this.source!.connect(this.processor!);
-            this.processor!.connect(this.audioContext!.destination);
-          },
-          onmessage: async (message: LiveServerMessage) => {
-            if (message.serverContent?.interrupted) {
-              this.stopPlayback();
-            }
-
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
-            if (base64Audio) {
-              this.playAudioChunk(base64Audio);
-            }
-          },
-          onclose: () => {
-            this.onStateChange?.('disconnected');
-            this.disconnect();
-          },
-          onerror: (error) => {
-            console.error("Gemini Live Error:", error);
-            this.onStateChange?.('error');
-            this.disconnect();
-          }
-        },
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName } },
-          },
-          systemInstruction,
+      this.micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 16000,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
         },
       });
-
-      this.session = await sessionPromise;
-    } catch (error) {
-      console.error("Failed to connect to Gemini Live:", error);
-      this.onStateChange?.('error');
-      this.disconnect();
+    } catch (err) {
+      if (err instanceof DOMException) {
+        if (err.name === 'NotAllowedError') {
+          throw new Error(
+            'Microphone access denied. ' +
+            'If running inside an iframe, the parent page needs allow="microphone" on the <iframe> tag.'
+          );
+        }
+        if (err.name === 'NotFoundError') {
+          throw new Error('No microphone found. Please connect a microphone and try again.');
+        }
+      }
+      throw err;
     }
   }
 
-  private playAudioChunk(base64Audio: string) {
-    if (!this.playbackContext) return;
-
-    const binaryString = atob(base64Audio);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    
-    const pcm16 = new Int16Array(bytes.buffer);
-    const audioBuffer = this.playbackContext.createBuffer(1, pcm16.length, 24000);
-    const channelData = audioBuffer.getChannelData(0);
-    
-    for (let i = 0; i < pcm16.length; i++) {
-      channelData[i] = pcm16[i] / 32768.0;
+  private async initAudioContext(): Promise<void> {
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      await this.audioContext.resume();
+      return;
     }
 
-    const source = this.playbackContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.playbackContext.destination);
+    this.audioContext = new AudioContext({ sampleRate: 16000 });
 
-    const currentTime = this.playbackContext.currentTime;
-    if (this.nextPlayTime < currentTime) {
-      this.nextPlayTime = currentTime;
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
     }
 
-    source.start(this.nextPlayTime);
-    this.nextPlayTime += audioBuffer.duration;
-  }
-
-  private stopPlayback() {
-    if (this.playbackContext) {
-      this.playbackContext.close();
-      this.playbackContext = new AudioContext({ sampleRate: 24000 });
-      this.nextPlayTime = this.playbackContext.currentTime;
+    // Load AudioWorklet from blob URL — replaces deprecated ScriptProcessorNode
+    const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    try {
+      await this.audioContext.audioWorklet.addModule(url);
+    } finally {
+      URL.revokeObjectURL(url);
     }
   }
 
-  disconnect() {
-    if (this.processor) {
-      this.processor.disconnect();
-      this.processor.onaudioprocess = null;
-      this.processor = null;
-    }
-    if (this.source) {
-      this.source.disconnect();
-      this.source = null;
-    }
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
-      this.mediaStream = null;
-    }
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
-    if (this.playbackContext) {
-      this.playbackContext.close();
-      this.playbackContext = null;
-    }
-    if (this.session) {
+  private initWebSocket(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error(
+          'WebSocket connection timed out (10s). ' +
+          'Check that the Supabase Edge Function is deployed: ' +
+          'supabase functions deploy gemini-live --no-verify-jwt'
+        ));
+      }, 10_000);
+
       try {
-        // @ts-ignore
-        if (this.session.close) this.session.close();
-      } catch (e) {}
-      this.session = null;
+        this.ws = new WebSocket(SUPABASE_WS_URL);
+        this.ws.binaryType = 'arraybuffer';
+      } catch (err) {
+        clearTimeout(timeout);
+        reject(new Error(`Failed to open WebSocket: ${err}`));
+        return;
+      }
+
+      this.ws.onopen = () => {
+        clearTimeout(timeout);
+        console.log('[GeminiLive] Connected via Supabase Edge Function');
+      };
+
+      // Wait for the relay to confirm Gemini is also connected
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'connected') {
+            resolve();
+          }
+        } catch {
+          // Non-JSON = binary audio, ignore during handshake
+        }
+        // After initial resolve, hand off to normal handler
+        this.ws!.onmessage = (ev) => this.handleMessage(ev);
+      };
+
+      this.ws.onclose = (ev) => {
+        clearTimeout(timeout);
+        console.log(`[GeminiLive] WS closed: ${ev.code} ${ev.reason}`);
+        if (this.state === 'connected') {
+          this.setState('disconnected');
+          this.cleanup();
+        }
+      };
+
+      this.ws.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error(
+          `WebSocket error connecting to Supabase. ` +
+          `Verify the function is deployed and GEMINI_API_KEY secret is set:\n` +
+          `  supabase secrets set GEMINI_API_KEY=your_key`
+        ));
+      };
+    });
+  }
+
+  private async startCapture(): Promise<void> {
+    if (!this.audioContext || !this.micStream) return;
+
+    this.sourceNode = this.audioContext.createMediaStreamSource(this.micStream);
+    this.workletNode = new AudioWorkletNode(this.audioContext, 'audio-capture-processor');
+
+    // Stream PCM chunks to the Supabase relay as binary
+    this.workletNode.port.onmessage = (event) => {
+      if (this.ws?.readyState === WebSocket.OPEN && event.data.pcm16) {
+        this.ws.send((event.data.pcm16 as Int16Array).buffer);
+      }
+    };
+
+    // Capture only — don't connect to speakers (avoids feedback)
+    this.sourceNode.connect(this.workletNode);
+  }
+
+  private handleMessage(event: MessageEvent): void {
+    if (event.data instanceof ArrayBuffer) {
+      this.playAudioChunk(event.data);
+      return;
     }
-    this.onStateChange?.('disconnected');
+
+    try {
+      const msg = JSON.parse(event.data as string);
+      switch (msg.type) {
+        case 'transcript':
+          this.config?.onTranscript?.(msg.text, msg.role ?? 'assistant');
+          break;
+        case 'turn_complete':
+        case 'interrupted':
+          break;
+        case 'error':
+          this.config?.onError?.(new Error(msg.message ?? 'Unknown relay error'));
+          break;
+        default:
+          console.debug('[GeminiLive] Message:', msg.type);
+      }
+    } catch {
+      console.warn('[GeminiLive] Could not parse message');
+    }
+  }
+
+  private async playAudioChunk(buffer: ArrayBuffer): Promise<void> {
+    if (!this.audioContext) return;
+    try {
+      const audioBuffer = await this.audioContext.decodeAudioData(buffer.slice(0));
+      const source = this.audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(this.audioContext.destination);
+      source.start();
+    } catch {
+      // Silently ignore decode errors — partial chunks are expected
+    }
+  }
+
+  private setState(state: ConnectionState): void {
+    if (this.state === state) return;
+    this.state = state;
+    this.config?.onStateChange?.(state);
+  }
+
+  private async cleanup(): Promise<void> {
+    this.micStream?.getTracks().forEach((t) => t.stop());
+    this.micStream = null;
+
+    this.sourceNode?.disconnect();
+    this.sourceNode = null;
+    this.workletNode?.disconnect();
+    this.workletNode = null;
+
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      await this.audioContext.close();
+    }
+    this.audioContext = null;
+
+    if (this.ws) {
+      this.ws.onclose = null;
+      if (
+        this.ws.readyState === WebSocket.OPEN ||
+        this.ws.readyState === WebSocket.CONNECTING
+      ) {
+        this.ws.close(1000, 'Client disconnect');
+      }
+      this.ws = null;
+    }
   }
 }
 

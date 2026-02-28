@@ -26,14 +26,188 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { webLLMService } from './services/webLLMService';
 import { geminiLiveService } from './services/geminiLiveService';
-import { AVAILABLE_MODELS, type Message, type ModelConfig } from './types';
+import { documentService } from './services/documentService';
+import { vectorDbService } from './services/vectorDbService';
+import { useMessages } from './hooks/useMessages';
+import { MessageList } from './components/MessageList';
+import { AVAILABLE_MODELS, type ModelConfig, type ChatSession } from './types';
 import { cn } from './lib/utils';
 
 export default function App() {
-  const [messages, setMessages] = useState<Message[]>(() => {
-    const saved = localStorage.getItem('amo_chat_history');
-    return saved ? JSON.parse(saved) : [];
+  const [chats, setChats] = useState<ChatSession[]>(() => {
+    const saved = localStorage.getItem('amo_chats');
+    let parsed: ChatSession[] = [];
+    
+    if (saved) {
+      try {
+        parsed = JSON.parse(saved);
+      } catch (e) {
+        parsed = [];
+      }
+    } else {
+      const oldHistory = localStorage.getItem('amo_chat_history');
+      if (oldHistory) {
+        try {
+          const history = JSON.parse(oldHistory);
+          if (history.length > 0) {
+            parsed = [{ id: `chat-${Date.now()}`, title: 'Previous Chat', messages: history, updatedAt: Date.now() }];
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (parsed.length === 0) {
+      parsed = [{ id: `chat-${Date.now()}`, title: 'New Chat', messages: [], updatedAt: Date.now() }];
+    }
+
+    // Sanitize: Ensure unique IDs for chats and messages to prevent duplicate key errors
+    const seenChatIds = new Set();
+    return parsed.map(chat => {
+      let chatId = chat.id;
+      if (!chatId || seenChatIds.has(chatId)) {
+        chatId = `chat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      }
+      seenChatIds.add(chatId);
+
+      const seenMsgIds = new Set();
+      const sanitizedMessages = (chat.messages || []).map(msg => {
+        let msgId = msg.id;
+        if (!msgId || seenMsgIds.has(msgId)) {
+          msgId = `${msg.role}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        }
+        seenMsgIds.add(msgId);
+        return { ...msg, id: msgId };
+      });
+
+      return { ...chat, id: chatId, messages: sanitizedMessages };
+    });
   });
+  const [currentChatId, setCurrentChatId] = useState<string>(chats[0]?.id || Date.now().toString());
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [livePersona, setLivePersona] = useState<'Amo' | 'Riri'>('Amo');
+  const [isUploadingDoc, setIsUploadingDoc] = useState(false);
+  const [uploadedDocs, setUploadedDocs] = useState<{id: string, name: string}[]>([]);
+  const docInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    vectorDbService.loadFromStorage().then(() => {
+      const docs = vectorDbService.getDocuments();
+      const uniqueDocs = Array.from(new Set(docs.map(d => d.documentId)))
+        .map(id => {
+          const doc = docs.find(d => d.documentId === id);
+          return { id, name: doc?.documentName || 'Unknown' };
+        });
+      setUploadedDocs(uniqueDocs);
+    });
+  }, []);
+
+  const handleDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingDoc(true);
+    try {
+      const { content, name } = await documentService.parseFile(file);
+      const documentId = crypto.randomUUID();
+      const chunks = documentService.chunkDocument(content, documentId, name);
+      
+      for (const chunk of chunks) {
+        await vectorDbService.addDocument(chunk);
+      }
+      
+      setUploadedDocs(prev => [...prev, { id: documentId, name }]);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Failed to upload document');
+    } finally {
+      setIsUploadingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = '';
+    }
+  };
+
+  const removeDoc = (id: string) => {
+    vectorDbService.removeDocument(id);
+    setUploadedDocs(prev => prev.filter(d => d.id !== id));
+  };
+
+  const currentChat = chats.find(c => c.id === currentChatId) || chats[0];
+
+  const { 
+    messages, 
+    setMessages, 
+    addMessage, 
+    updateMessage,
+    addStreamingMessage, 
+    appendToMessage, 
+    finalizeMessage, 
+    clearMessages 
+  } = useMessages(currentChat?.messages || []);
+
+  // Sync useMessages with currentChatId
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    if (currentChat) {
+      setMessages(currentChat.messages);
+    }
+  }, [currentChatId]);
+
+  // Sync messages back to chats
+  useEffect(() => {
+    setChats(prev => prev.map(chat => {
+      if (chat.id === currentChatId) {
+        // Only update if messages actually changed to avoid infinite loops
+        if (JSON.stringify(chat.messages) === JSON.stringify(messages)) return chat;
+
+        let newTitle = chat.title;
+        if (chat.title === 'New Chat' && messages.length > 0) {
+          const firstUserMsg = messages.find(m => m.role === 'user');
+          if (firstUserMsg && firstUserMsg.content) {
+            newTitle = firstUserMsg.content.slice(0, 30) + (firstUserMsg.content.length > 30 ? '...' : '');
+          }
+        }
+        return { ...chat, messages, title: newTitle, updatedAt: Date.now() };
+      }
+      return chat;
+    }));
+  }, [messages, currentChatId]);
+
+  const createNewChat = () => {
+    const newChat: ChatSession = {
+      id: `chat-${crypto.randomUUID()}`,
+      title: 'New Chat',
+      messages: [],
+      updatedAt: Date.now()
+    };
+    setChats(prev => [newChat, ...prev]);
+    setCurrentChatId(newChat.id);
+    if (window.innerWidth < 768) setIsSidebarOpen(false);
+  };
+
+  const deleteChat = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setChats(prev => {
+      const updated = prev.filter(c => c.id !== id);
+      if (updated.length === 0) {
+        const newChat = { 
+          id: `chat-${crypto.randomUUID()}`, 
+          title: 'New Chat', 
+          messages: [], 
+          updatedAt: Date.now() 
+        };
+        setCurrentChatId(newChat.id);
+        return [newChat];
+      }
+      if (currentChatId === id) {
+        setCurrentChatId(updated[0].id);
+      }
+      return updated;
+    });
+  };
+
   const [input, setInput] = useState('');
   const [selectedModel, setSelectedModel] = useState<ModelConfig>(AVAILABLE_MODELS[0]);
   const [isLoading, setIsLoading] = useState(false);
@@ -49,6 +223,8 @@ export default function App() {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>('');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [liveUserTranscription, setLiveUserTranscription] = useState('');
+  const [liveModelTranscription, setLiveModelTranscription] = useState('');
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -62,8 +238,8 @@ export default function App() {
   useEffect(() => { isVoiceModeRef.current = isVoiceMode; }, [isVoiceMode]);
 
   useEffect(() => {
-    localStorage.setItem('amo_chat_history', JSON.stringify(messages));
-  }, [messages]);
+    localStorage.setItem('amo_chats', JSON.stringify(chats));
+  }, [chats]);
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -223,18 +399,44 @@ export default function App() {
 
       if (selectedModel.isCloud) {
         setDownloadStatus('Connecting to Gemini Live...');
-        geminiLiveService.onStateChange = (state) => {
-          if (state === 'connected') {
-            setIsModelLoaded(true);
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}?persona=${livePersona}`;
+        
+        await geminiLiveService.connect({
+          onStateChange: (state) => {
+            if (state === 'connected') {
+              setIsModelLoaded(true);
+              setIsDownloading(false);
+            } else if (state === 'disconnected' || state === 'error') {
+              setIsModelLoaded(false);
+              setIsDownloading(false);
+              if (state === 'error') setError('Connection to Gemini Live lost.');
+            }
+          },
+          onTranscript: (text, role) => {
+            if (role === 'user') {
+              setLiveUserTranscription(text);
+              const lastMsg = messages[messages.length - 1];
+              if (lastMsg && lastMsg.role === 'user' && lastMsg.id.startsWith('live-')) {
+                updateMessage(lastMsg.id, text);
+              } else {
+                addMessage('user', text);
+              }
+            } else {
+              setLiveModelTranscription(text);
+              const lastMsg = messages[messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant' && lastMsg.id.startsWith('live-')) {
+                updateMessage(lastMsg.id, text);
+              } else {
+                addMessage('assistant', text);
+              }
+            }
+          },
+          onError: (err) => {
+            setError(err.message);
             setIsDownloading(false);
-          } else if (state === 'disconnected' || state === 'error') {
-            setIsModelLoaded(false);
-            setIsDownloading(false);
-            if (state === 'error') setError('Connection to Gemini Live lost.');
           }
-        };
-        const botName = selectedModel.name.split(' ')[0]; // Will be 'Amo' or 'Riri'
-        await geminiLiveService.connect(botName);
+        });
         return;
       }
 
@@ -254,18 +456,19 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    // We removed the auto-connect to prevent AudioContext initialization without user gesture
+    // Users must now click "Retry Connection" or "Connect" to start live audio
+  }, [selectedModel.id]);
+
   const handleSend = async () => {
     if ((!inputRef.current.trim() && !selectedImage) || !isModelLoaded || isLoading) return;
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: inputRef.current,
-      image: selectedImage || undefined,
-      timestamp: Date.now(),
-    };
-
-    setMessages(prev => [...prev, userMessage]);
+    const userContent = inputRef.current;
+    const userImage = selectedImage || undefined;
+    
+    addMessage('user', userContent, userImage);
+    
     setInput('');
     setSelectedImage(null);
     if (textareaRef.current) {
@@ -274,19 +477,11 @@ export default function App() {
     setIsLoading(true);
     stopSpeaking();
 
-    const assistantMessageId = (Date.now() + 1).toString();
-    const initialAssistantMessage: Message = {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-    };
-
-    setMessages(prev => [...prev, initialAssistantMessage]);
+    const assistantMessageId = addStreamingMessage('assistant');
 
     try {
-      const chatHistory = [...messages, userMessage].map(m => ({
-        role: m.role,
+      const chatHistory = [...messages, { role: 'user', content: userContent, image: userImage }].map(m => ({
+        role: m.role as any,
         content: m.content,
         image: m.image
       }));
@@ -296,11 +491,18 @@ export default function App() {
 
       const botName = selectedModel.name.split(' ')[0]; // Will be 'Amo' or 'Riri'
 
+      // RAG: Search for relevant context
+      let context = "";
+      if (uploadedDocs.length > 0) {
+        const results = await vectorDbService.search(userContent);
+        if (results.length > 0) {
+          context = results.map(r => r.content).join("\n\n");
+        }
+      }
+
       await webLLMService.generate(chatHistory, botName, (text) => {
         finalFullText = text;
-        setMessages(prev => prev.map(m => 
-          m.id === assistantMessageId ? { ...m, content: text } : m
-        ));
+        updateMessage(assistantMessageId, text, true);
 
         if (isVoiceModeRef.current) {
           const unspoken = text.slice(spokenLength);
@@ -311,14 +513,9 @@ export default function App() {
             speak(sentence);
           }
         }
-      });
+      }, context); // Pass context to generate
 
-      if (isVoiceModeRef.current && finalFullText.length > spokenLength) {
-        const remaining = finalFullText.slice(spokenLength);
-        if (remaining.trim()) {
-          speak(remaining);
-        }
-      }
+      finalizeMessage(assistantMessageId);
     } catch (err: any) {
       setError(err.message || 'Generation failed.');
     } finally {
@@ -327,7 +524,7 @@ export default function App() {
   };
 
   const clearChat = () => {
-    setMessages([]);
+    clearMessages();
   };
 
   return (
@@ -335,6 +532,12 @@ export default function App() {
       {/* Header */}
       <header className="h-16 border-b border-white/10 flex items-center justify-between px-6 bg-[#0A0A0A]/80 backdrop-blur-xl z-20 shrink-0">
         <div className="flex items-center gap-3">
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="p-2 -ml-2 text-white/40 hover:text-white/80 hover:bg-white/5 rounded-lg transition-colors"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
           <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.3)]">
             <Zap className="text-black w-5 h-5 fill-current" />
           </div>
@@ -384,6 +587,66 @@ export default function App() {
         </div>
       </header>
 
+      {/* Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 md:hidden"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Sidebar */}
+      <div className={cn(
+        "fixed inset-y-0 left-0 z-40 w-72 bg-[#0A0A0A] border-r border-white/10 transform transition-transform duration-300 ease-in-out flex flex-col",
+        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+      )}>
+        <div className="p-4 border-b border-white/10 flex items-center justify-between">
+          <h2 className="font-bold text-white/80">Chat History</h2>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-2 text-white/40 hover:text-white/80 rounded-lg md:hidden">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-4">
+          <button
+            onClick={createNewChat}
+            className="w-full flex items-center gap-2 px-4 py-3 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 rounded-xl transition-colors font-medium"
+          >
+            <MessageSquare className="w-4 h-4" />
+            New Chat
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-1">
+          {chats.map(chat => (
+            <div
+              key={chat.id}
+              onClick={() => {
+                setCurrentChatId(chat.id);
+                if (window.innerWidth < 768) setIsSidebarOpen(false);
+              }}
+              className={cn(
+                "w-full flex items-center justify-between px-3 py-3 rounded-xl text-left transition-colors cursor-pointer group",
+                currentChatId === chat.id ? "bg-white/10 text-white" : "text-white/60 hover:bg-white/5 hover:text-white/90"
+              )}
+            >
+              <div className="truncate pr-2 text-sm font-medium">
+                {chat.title}
+              </div>
+              <button
+                onClick={(e) => deleteChat(chat.id, e)}
+                className="opacity-0 group-hover:opacity-100 p-1.5 text-white/40 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="flex-1 flex relative overflow-hidden">
         {/* Settings Panel (Overlay) */}
         <AnimatePresence>
@@ -414,6 +677,9 @@ export default function App() {
                       onChange={(e) => {
                         const model = AVAILABLE_MODELS.find(m => m.id === e.target.value);
                         if (model) {
+                          if (selectedModel.isCloud) {
+                            geminiLiveService.disconnect();
+                          }
                           setSelectedModel(model);
                           setIsModelLoaded(false);
                         }
@@ -447,8 +713,8 @@ export default function App() {
                         onChange={(e) => setSelectedVoiceURI(e.target.value)}
                         className="w-full bg-[#1A1A1A] border border-white/10 rounded-xl px-4 py-3 text-sm appearance-none cursor-pointer focus:outline-none focus:border-emerald-500/50 transition-all text-white/80"
                       >
-                        {voices.map(voice => (
-                          <option key={voice.voiceURI} value={voice.voiceURI}>
+                        {voices.map((voice, idx) => (
+                          <option key={`${voice.voiceURI}-${voice.name}-${idx}`} value={voice.voiceURI}>
                             {voice.name} ({voice.lang})
                           </option>
                         ))}
@@ -459,28 +725,53 @@ export default function App() {
                 )}
 
                 {!isModelLoaded ? (
-                  <button
-                    onClick={handleDownloadAndLoad}
-                    disabled={isDownloading}
-                    className={cn(
-                      "w-full py-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2",
-                      isDownloading 
-                        ? "bg-white/5 text-white/40 cursor-not-allowed" 
-                        : "bg-emerald-500 text-black hover:bg-emerald-400 active:scale-[0.98] shadow-lg shadow-emerald-500/20"
-                    )}
-                  >
-                    {isDownloading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        {selectedModel.isCloud ? 'Connecting...' : 'Downloading...'}
-                      </>
-                    ) : (
-                      <>
-                        {selectedModel.isCloud ? <Zap className="w-4 h-4" /> : <Download className="w-4 h-4" />}
-                        {selectedModel.isCloud ? 'Connect to Live Audio' : 'Download & Load'}
-                      </>
-                    )}
-                  </button>
+                  selectedModel.isCloud ? (
+                    <button
+                      onClick={handleDownloadAndLoad}
+                      disabled={isDownloading || !error}
+                      className={cn(
+                        "w-full py-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2",
+                        (isDownloading || !error)
+                          ? "bg-white/5 text-white/40 cursor-not-allowed" 
+                          : "bg-emerald-500 text-black hover:bg-emerald-400 active:scale-[0.98] shadow-lg shadow-emerald-500/20"
+                      )}
+                    >
+                      {isDownloading || !error ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Connecting to Live Audio...
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-4 h-4" />
+                          Retry Connection
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleDownloadAndLoad}
+                      disabled={isDownloading}
+                      className={cn(
+                        "w-full py-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2",
+                        isDownloading 
+                          ? "bg-white/5 text-white/40 cursor-not-allowed" 
+                          : "bg-emerald-500 text-black hover:bg-emerald-400 active:scale-[0.98] shadow-lg shadow-emerald-500/20"
+                      )}
+                    >
+                      {isDownloading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Downloading...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-4 h-4" />
+                          Download & Load
+                        </>
+                      )}
+                    </button>
+                  )
                 ) : (
                   <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 text-sm font-medium">
@@ -502,6 +793,55 @@ export default function App() {
                     </button>
                   </div>
                 )}
+
+                <div className="pt-6 border-t border-white/10">
+                  <label className="text-[11px] uppercase tracking-wider text-white/40 font-bold mb-3 block">Knowledge Base (RAG)</label>
+                  <div className="space-y-3">
+                    <button
+                      onClick={() => docInputRef.current?.click()}
+                      disabled={isUploadingDoc}
+                      className="w-full py-3 rounded-xl border border-dashed border-white/20 hover:border-emerald-500/50 hover:bg-emerald-500/5 transition-all flex items-center justify-center gap-2 text-xs text-white/60"
+                    >
+                      {isUploadingDoc ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <DownloadCloud className="w-3 h-3" />
+                          Upload PDF or Text
+                        </>
+                      )}
+                    </button>
+                    <input
+                      type="file"
+                      ref={docInputRef}
+                      onChange={handleDocUpload}
+                      accept=".pdf,.txt,.md"
+                      className="hidden"
+                    />
+
+                    {uploadedDocs.length > 0 && (
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                        {uploadedDocs.map(doc => (
+                          <div key={doc.id} className="flex items-center justify-between p-2 rounded-lg bg-white/[0.03] border border-white/5 group">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <MessageSquare className="w-3 h-3 text-emerald-500/50 shrink-0" />
+                              <span className="text-[10px] text-white/60 truncate">{doc.name}</span>
+                            </div>
+                            <button
+                              onClick={() => removeDoc(doc.id)}
+                              className="p-1 text-white/20 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {messages.length > 0 && (
                   <button
@@ -552,19 +892,28 @@ export default function App() {
                     Experience true privacy. All processing happens locally on your GPU. No data ever leaves this browser.
                   </p>
                 </div>
-                {!isModelLoaded && (
+                {!isModelLoaded && !selectedModel.isCloud && (
                   <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs flex gap-3 items-start text-left">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>You need to download and load a model before you can start chatting. Open settings to begin.</span>
                   </div>
                 )}
-                {!isModelLoaded && (
+                {!isModelLoaded && !selectedModel.isCloud && (
                    <button 
                     onClick={() => setIsSettingsOpen(true)}
                     className="px-6 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-sm font-medium transition-colors flex items-center gap-2"
                    >
                      <Settings className="w-4 h-4" />
                      Open Settings
+                   </button>
+                )}
+                {!isModelLoaded && selectedModel.isCloud && error && (
+                   <button 
+                    onClick={handleDownloadAndLoad}
+                    className="px-6 py-3 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-500 text-sm font-medium transition-colors flex items-center gap-2 border border-red-500/20"
+                   >
+                     <Zap className="w-4 h-4" />
+                     Retry Connection
                    </button>
                 )}
               </div>
@@ -596,7 +945,7 @@ export default function App() {
             </div>
           )}
 
-          {isModelLoaded && selectedModel.isCloud && (
+          {isModelLoaded && selectedModel.isCloud && messages.length === 0 && !liveUserTranscription && !liveModelTranscription && (
             <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-8 px-4">
               <div className="relative">
                 <div className="absolute inset-0 bg-emerald-500/20 rounded-full blur-3xl animate-pulse" />
@@ -613,77 +962,41 @@ export default function App() {
             </div>
           )}
 
-          <AnimatePresence initial={false}>
-            {!selectedModel.isCloud && messages.map((message) => (
-              <motion.div
-                key={message.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className={cn(
-                  "flex gap-6 max-w-4xl mx-auto group",
-                  message.role === 'user' ? "flex-row-reverse" : "flex-row"
+            <MessageList 
+              messages={messages} 
+              assistantName={selectedModel.name.split(' ')[0]}
+              onCopy={handleCopy}
+              onRegenerate={handleRegenerate}
+            />
+
+            {(liveUserTranscription || liveModelTranscription) && (
+              <div className="px-6 pb-4 space-y-2 max-w-4xl mx-auto w-full">
+                {liveUserTranscription && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex justify-end"
+                  >
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 px-4 py-2 rounded-2xl rounded-tr-none text-xs italic">
+                      {liveUserTranscription}
+                      <span className="ml-2 inline-block w-1 h-1 bg-emerald-500/50 rounded-full animate-pulse" />
+                    </div>
+                  </motion.div>
                 )}
-              >
-                <div className={cn(
-                  "w-10 h-10 rounded-xl shrink-0 flex items-center justify-center border",
-                  message.role === 'user' 
-                    ? "bg-white/5 border-white/10" 
-                    : "bg-emerald-500/10 border-emerald-500/20"
-                )}>
-                  {message.role === 'user' ? (
-                    <Settings className="w-5 h-5 text-white/40" />
-                  ) : (
-                    <Zap className="w-5 h-5 text-emerald-500" />
-                  )}
-                </div>
-                <div className={cn(
-                  "flex flex-col space-y-2",
-                  message.role === 'user' ? "items-end" : "items-start"
-                )}>
-                  <div className={cn(
-                    "px-6 py-4 rounded-2xl text-sm leading-relaxed",
-                    message.role === 'user' 
-                      ? "bg-white/5 text-white/90 rounded-tr-none" 
-                      : "bg-[#1A1A1A] text-white/90 rounded-tl-none border border-white/5"
-                  )}>
-                    {message.image && (
-                      <img src={message.image} alt="User upload" className="max-w-xs rounded-lg mb-3 border border-white/10" />
-                    )}
-                    {message.content || (
-                      <div className="flex gap-1 py-1">
-                        <span className="w-1.5 h-1.5 bg-emerald-500/50 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                        <span className="w-1.5 h-1.5 bg-emerald-500/50 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                        <span className="w-1.5 h-1.5 bg-emerald-500/50 rounded-full animate-bounce" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-[10px] font-mono text-white/20 uppercase tracking-tighter">
-                      {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {message.role === 'assistant' && message.content && (
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
-                          onClick={() => handleCopy(message.content)}
-                          className="p-1 text-white/20 hover:text-white/60 transition-colors"
-                          title="Copy message"
-                        >
-                          <Copy className="w-3 h-3" />
-                        </button>
-                        <button 
-                          onClick={() => handleRegenerate(message.id)}
-                          className="p-1 text-white/20 hover:text-white/60 transition-colors"
-                          title="Regenerate response"
-                        >
-                          <RefreshCw className="w-3 h-3" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
+                {liveModelTranscription && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex justify-start"
+                  >
+                    <div className="bg-white/5 border border-white/10 text-white/60 px-4 py-2 rounded-2xl rounded-tl-none text-xs italic">
+                      {liveModelTranscription}
+                      <span className="ml-2 inline-block w-1 h-1 bg-white/50 rounded-full animate-pulse" />
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+            )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -708,7 +1021,7 @@ export default function App() {
         </AnimatePresence>
 
         {/* Input Area */}
-        {!selectedModel.isCloud && (
+        {!selectedModel.isCloud ? (
           <div className="p-4 sm:p-6 md:p-8 bg-gradient-to-t from-[#0A0A0A] via-[#0A0A0A] to-transparent shrink-0 pb-[calc(1rem+env(safe-area-inset-bottom))]">
             <div className="max-w-4xl mx-auto relative flex flex-col gap-2">
               {selectedImage && (
@@ -789,6 +1102,50 @@ export default function App() {
             <p className="text-center mt-3 text-[10px] text-white/20 uppercase tracking-[0.2em] font-bold">
               Powered by WebGPU • Private & Secure
             </p>
+          </div>
+        ) : (
+          <div className="p-4 sm:p-6 md:p-8 bg-gradient-to-t from-[#0A0A0A] via-[#0A0A0A] to-transparent shrink-0 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+            <div className="max-w-4xl mx-auto flex items-center justify-center gap-4">
+              <span className="text-sm text-white/60 font-medium">Live Persona:</span>
+              <div className="flex bg-[#1A1A1A] rounded-xl p-1 border border-white/10">
+                <button
+                  onClick={async () => {
+                    setLivePersona('Amo');
+                    if (isModelLoaded) {
+                      await geminiLiveService.disconnect();
+                      setDownloadStatus('Switching to Amo...');
+                      handleDownloadAndLoad();
+                    }
+                  }}
+                  className={cn(
+                    "px-6 py-2 rounded-lg text-sm font-medium transition-all",
+                    livePersona === 'Amo' 
+                      ? "bg-emerald-500/20 text-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.1)]" 
+                      : "text-white/40 hover:text-white/80"
+                  )}
+                >
+                  Amo
+                </button>
+                <button
+                  onClick={async () => {
+                    setLivePersona('Riri');
+                    if (isModelLoaded) {
+                      await geminiLiveService.disconnect();
+                      setDownloadStatus('Switching to Riri...');
+                      handleDownloadAndLoad();
+                    }
+                  }}
+                  className={cn(
+                    "px-6 py-2 rounded-lg text-sm font-medium transition-all",
+                    livePersona === 'Riri' 
+                      ? "bg-emerald-500/20 text-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.1)]" 
+                      : "text-white/40 hover:text-white/80"
+                  )}
+                >
+                  Riri
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </main>
