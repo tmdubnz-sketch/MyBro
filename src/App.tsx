@@ -230,7 +230,7 @@ export default function App() {
             <Zap className="text-black w-5 h-5 fill-current" />
           </div>
           <div>
-            <h1 className="font-bold text-base tracking-tight leading-none">LocalMind</h1>
+            <h1 className="font-bold text-base tracking-tight leading-none">amo</h1>
             <div className="flex items-center gap-2 mt-1">
               <div className={cn("w-1.5 h-1.5 rounded-full", isModelLoaded ? "bg-emerald-500 animate-pulse" : "bg-white/20")} />
               <span className="text-[10px] font-medium text-white/60">
@@ -408,7 +408,7 @@ export default function App() {
                   <MessageSquare className="w-10 h-10 text-white/20" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold mb-2">Welcome to LocalMind</h2>
+                  <h2 className="text-xl font-bold mb-2">Welcome to amo</h2>
                   <p className="text-sm text-white/40 leading-relaxed">
                     Experience true privacy. All processing happens locally on your GPU. No data ever leaves this browser.
                   </p>

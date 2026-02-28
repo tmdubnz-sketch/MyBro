@@ -17,31 +17,31 @@ export interface ModelConfig {
 export const AVAILABLE_MODELS: ModelConfig[] = [
   {
     id: "gemini-live",
-    name: "Gemini 2.5 Live Audio",
+    name: "Online Chat",
     description: "Ultra-low latency cloud model with native voice-to-voice.",
     size: "Cloud",
     family: 'gemini',
     isCloud: true
   },
   {
-    id: "gemma-2-2b-it-q4f16_1-MLC",
-    name: "Gemma 2 2B",
-    description: "Google's lightweight, state-of-the-art model.",
-    size: "1.6 GB",
-    family: 'gemma'
+    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
+    name: "Offline Small",
+    description: "Ultra-lightweight model for fast performance.",
+    size: "0.4 GB",
+    family: 'qwen'
   },
   {
     id: "Qwen2.5-1.5B-Instruct-q4f16_1-MLC",
-    name: "Qwen 2.5 1.5B",
+    name: "Offline Medium",
     description: "Alibaba's highly capable small language model.",
     size: "1.1 GB",
     family: 'qwen'
   },
   {
-    id: "Qwen2.5-0.5B-Instruct-q4f16_1-MLC",
-    name: "Qwen 2.5 0.5B",
-    description: "Ultra-lightweight model for fast performance.",
-    size: "0.4 GB",
-    family: 'qwen'
+    id: "gemma-2-2b-it-q4f16_1-MLC",
+    name: "Offline Large",
+    description: "Google's lightweight, state-of-the-art model.",
+    size: "1.6 GB",
+    family: 'gemma'
   }
 ];

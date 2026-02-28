@@ -1,5 +1,5 @@
 {
-  "name": "LocalMind Chat",
+  "name": "amo",
   "description": "A private, offline-first chatbot running Gemma and Qwen models directly in your browser using WebGPU, plus Gemini Live Audio.",
   "requestFramePermissions": [
     "microphone"

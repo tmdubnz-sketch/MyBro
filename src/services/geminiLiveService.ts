@@ -83,7 +83,7 @@ export class GeminiLiveService {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
-          systemInstruction: "You are a helpful and highly responsive AI assistant.",
+          systemInstruction: "You are amo, a helpful and highly responsive AI assistant.",
         },
       });
 
