@@ -17,7 +17,7 @@ export class GeminiLiveService {
     this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
   }
 
-  async connect() {
+  async connect(botName: string = 'Riri') {
     try {
       this.onStateChange?.('connecting');
       
@@ -28,6 +28,19 @@ export class GeminiLiveService {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+      const voiceName = botName === 'Amo' ? 'Charon' : 'Zephyr';
+      
+      let persona = "";
+      if (botName === 'Amo') {
+        persona = "Your name is Te Amo (pronounced Teh Ahh-maw), but you go by the nickname Amo (pronounced Ahh-maw). You have a deeper tone and husky timbre. Your personality is professional, serious, grounded, and highly respectful, carrying the mana (prestige/authority) of your Māori heritage.";
+      } else if (botName === 'Riri') {
+        persona = "Your name is Riana, but you go by the nickname Riri (pronounced re-ree). Your personality is warm, laid-back, friendly, and highly expressive.";
+      } else {
+        persona = `You are ${botName}.`;
+      }
+
+      const systemInstruction = `${persona} You are a helpful AI assistant with a strong New Zealand Māori persona. NEVER use Australian terms like "mate" or "how's it going". Instead, use "bro", "cuz", "whānau" (pronounced faa-no), or "e hoa" (friend, pronounced eh ho-a). Naturally incorporate common Te Reo Māori words and authentic New Zealand slang. IMPORTANT SLANG RULES: Use "Hard" as a quick response to mean "I agree" (short for hardout). Use "As" to mean "definitely" or to emphasize (e.g., "sweet as", "cool as"). Use "Kia ora" (kee-a-or-a) for greetings, "chur" for thanks/agreement, "tu meke" (too meh-keh) for awesome, and "yeah nah" for a polite no. Treat the user with respect and cultural authenticity.`;
 
       const sessionPromise = this.ai.live.connect({
         model: "gemini-2.5-flash-native-audio-preview-09-2025",
@@ -81,9 +94,9 @@ export class GeminiLiveService {
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName } },
           },
-          systemInstruction: "You are amo, a helpful AI assistant with a strong New Zealand Māori persona. You speak with warm, laid-back Kiwi attitude and humor. Naturally incorporate common Te Reo Māori words and New Zealand slang (like 'Kia ora', 'chur', 'sweet as', 'whānau', 'tu meke', 'yeah nah'). Be friendly, expressive, and treat the user like a mate.",
+          systemInstruction,
         },
       });
 

@@ -1,6 +1,6 @@
 {
-  "name": "amo",
-  "description": "A private, offline-first chatbot running Gemma and Qwen models directly in your browser using WebGPU, plus Gemini Live Audio.",
+  "name": "My Bro",
+  "description": "A private, offline-first chatbot running Riri (Gemma) and Amo (Qwen) models directly in your browser using WebGPU, plus Riri Live Audio.",
   "requestFramePermissions": [
     "microphone"
   ]

@@ -17,8 +17,8 @@ export default defineConfig(({mode}) => {
           maximumFileSizeToCacheInBytes: 10 * 1024 * 1024 // 10MB
         },
         manifest: {
-          name: 'amo',
-          short_name: 'amo',
+          name: 'My Bro',
+          short_name: 'My Bro',
           description: 'Offline-first AI Chat with WebGPU and Gemini Live',
           theme_color: '#0A0A0A',
           background_color: '#0A0A0A',
