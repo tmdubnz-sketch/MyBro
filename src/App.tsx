@@ -50,7 +50,7 @@ export default function App() {
   useEffect(() => { isVoiceModeRef.current = isVoiceMode; }, [isVoiceMode]);
 
   useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SpeechRecognition) {
       recognitionRef.current = new SpeechRecognition();
       recognitionRef.current.continuous = false;
@@ -84,6 +84,14 @@ export default function App() {
   const speak = (text: string) => {
     if (!window.speechSynthesis) return;
     const utterance = new SpeechSynthesisUtterance(text);
+    
+    // Try to find a New Zealand voice
+    const voices = window.speechSynthesis.getVoices();
+    const nzVoice = voices.find(v => v.lang === 'en-NZ' || v.lang.includes('NZ'));
+    if (nzVoice) {
+      utterance.voice = nzVoice;
+    }
+    
     utterance.rate = 1.1;
     window.speechSynthesis.speak(utterance);
   };
