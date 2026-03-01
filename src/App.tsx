@@ -96,9 +96,33 @@ export default function App() {
     const saved = localStorage.getItem('amo_cloud_enabled');
     return saved === 'true';
   });
-  const [cloudEndpoint, setCloudEndpoint] = useState(() => localStorage.getItem('amo_cloud_endpoint') || '');
+  const [cloudProvider, setCloudProvider] = useState(() => localStorage.getItem('amo_cloud_provider') || 'groq');
+  const [cloudEndpoint, setCloudEndpoint] = useState(() => localStorage.getItem('amo_cloud_endpoint') || 'https://api.groq.com');
   const [cloudApiKey, setCloudApiKey] = useState(() => localStorage.getItem('amo_cloud_api_key') || '');
-  const [cloudModel, setCloudModel] = useState(() => localStorage.getItem('amo_cloud_model') || 'llama3');
+  const [cloudModel, setCloudModel] = useState(() => localStorage.getItem('amo_cloud_model') || 'llama-3.1-8b-instant');
+
+  const cloudPresets = {
+    groq: {
+      endpoint: 'https://api.groq.com',
+      model: 'llama-3.1-8b-instant',
+      placeholder: 'Your Groq API key',
+    },
+    openai: {
+      endpoint: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      placeholder: 'sk-...',
+    },
+    huggingface: {
+      endpoint: 'https://api-inference.huggingface.co',
+      model: 'meta-llama/Meta-Llama-3.1-8B-Instruct',
+      placeholder: 'hf_...',
+    },
+    custom: {
+      endpoint: '',
+      model: 'llama3',
+      placeholder: 'http://localhost:11434',
+    },
+  };
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -698,7 +722,33 @@ export default function App() {
                   {isCloudMode && (
                     <div className="space-y-3 text-left">
                       <div>
-                        <label className="block text-[10px] text-[#7a6a9a] mb-1">Ollama/Server URL</label>
+                        <label className="block text-[10px] text-[#7a6a9a] mb-1">Provider</label>
+                        <select
+                          value={cloudProvider}
+                          onChange={(e) => {
+                            const provider = e.target.value;
+                            setCloudProvider(provider);
+                            localStorage.setItem('amo_cloud_provider', provider);
+                            const preset = cloudPresets[provider as keyof typeof cloudPresets];
+                            if (preset) {
+                              setCloudEndpoint(preset.endpoint);
+                              setCloudModel(preset.model);
+                              localStorage.setItem('amo_cloud_endpoint', preset.endpoint);
+                              localStorage.setItem('amo_cloud_model', preset.model);
+                            }
+                          }}
+                          className="w-full px-3 py-2 rounded-lg bg-[rgba(255,255,255,0.05)] border border-[rgba(123,53,232,0.2)] text-xs text-[#e8e0f0] focus:outline-none focus:border-[#7b35e8]"
+                        >
+                          <option value="groq" className="bg-[#111115]">Groq (Free, fast)</option>
+                          <option value="openai" className="bg-[#111115]">OpenAI</option>
+                          <option value="huggingface" className="bg-[#111115]">HuggingFace</option>
+                          <option value="custom" className="bg-[#111115]">Custom Server</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-[#7a6a9a] mb-1">
+                          {cloudProvider === 'custom' ? 'Server URL' : 'Endpoint'}
+                        </label>
                         <input
                           type="text"
                           value={cloudEndpoint}
@@ -706,12 +756,12 @@ export default function App() {
                             setCloudEndpoint(e.target.value);
                             localStorage.setItem('amo_cloud_endpoint', e.target.value);
                           }}
-                          placeholder="http://192.168.1.x:11434"
+                          placeholder={cloudPresets[cloudProvider as keyof typeof cloudPresets]?.placeholder || 'URL'}
                           className="w-full px-3 py-2 rounded-lg bg-[rgba(255,255,255,0.05)] border border-[rgba(123,53,232,0.2)] text-xs text-[#e8e0f0] placeholder:text-[#7a6a9a] focus:outline-none focus:border-[#7b35e8]"
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[#7a6a9a] mb-1">Model (default: llama3)</label>
+                        <label className="block text-[10px] text-[#7a6a9a] mb-1">Model</label>
                         <input
                           type="text"
                           value={cloudModel}
@@ -719,12 +769,12 @@ export default function App() {
                             setCloudModel(e.target.value);
                             localStorage.setItem('amo_cloud_model', e.target.value);
                           }}
-                          placeholder="llama3"
+                          placeholder="Model name"
                           className="w-full px-3 py-2 rounded-lg bg-[rgba(255,255,255,0.05)] border border-[rgba(123,53,232,0.2)] text-xs text-[#e8e0f0] placeholder:text-[#7a6a9a] focus:outline-none focus:border-[#7b35e8]"
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] text-[#7a6a9a] mb-1">API Key (optional)</label>
+                        <label className="block text-[10px] text-[#7a6a9a] mb-1">API Key {cloudProvider === 'groq' && '(get free at groq.com)'}</label>
                         <input
                           type="password"
                           value={cloudApiKey}
@@ -732,7 +782,7 @@ export default function App() {
                             setCloudApiKey(e.target.value);
                             localStorage.setItem('amo_cloud_api_key', e.target.value);
                           }}
-                          placeholder="••••••••"
+                          placeholder={cloudPresets[cloudProvider as keyof typeof cloudPresets]?.placeholder || 'API key'}
                           className="w-full px-3 py-2 rounded-lg bg-[rgba(255,255,255,0.05)] border border-[rgba(123,53,232,0.2)] text-xs text-[#e8e0f0] placeholder:text-[#7a6a9a] focus:outline-none focus:border-[#7b35e8]"
                         />
                       </div>

@@ -49,6 +49,8 @@ class CloudLLMService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
         ...(this.config.apiKey ? { 'Authorization': `Bearer ${this.config.apiKey}` } : {}),
       },
       body: JSON.stringify({
