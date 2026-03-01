@@ -23,8 +23,7 @@ import { type ChatSession } from './types';
 import { cn } from './lib/utils';
 import { createId } from './lib/id';
 
-// Avoid rebuilding AudioContext on every render.
-const UI_CLICK_MS = 25;
+// Wire-free test mode
 
 function describeUnknownError(err: unknown): string {
   if (err instanceof Error) {
@@ -79,12 +78,6 @@ export default function App() {
   const [isVoiceReady, setIsVoiceReady] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>('off');
-  const [isAutomationEnabled, setIsAutomationEnabled] = useState(true);
-  const [uiSoundsEnabled, setUiSoundsEnabled] = useState<boolean>(() => {
-    const saved = localStorage.getItem('amo_ui_sounds');
-    if (saved === null) return true;
-    return saved === 'true';
-  });
   const [selectedAgent, setSelectedAgent] = useState<'Amo' | 'Riri' | null>(() => {
     const saved = localStorage.getItem('amo_selected_agent');
     return (saved as 'Amo' | 'Riri') || null;
@@ -125,30 +118,8 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const playUiClick = (): void => {
-    if (!uiSoundsEnabled) return;
-    try {
-      const Ctx = (window.AudioContext || (window as any).webkitAudioContext) as typeof AudioContext | undefined;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = 650;
-      gain.gain.value = 0.03;
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      setTimeout(() => {
-        try {
-          osc.stop();
-          ctx.close();
-        } catch {
-          // ignore
-        }
-      }, UI_CLICK_MS);
-    } catch {
-      // ignore
-    }
+    // Sound disabled in wire-free test
+    return;
   };
 
   const handleAgentSelect = (agent: 'Amo' | 'Riri') => {
@@ -480,42 +451,6 @@ export default function App() {
             </button>
           </div>
         )}
-
-        <button
-          onClick={async () => {
-            await playUiClick();
-            setIsAutomationEnabled((v) => !v);
-          }}
-          className={cn(
-            "ml-3 px-3 py-2 rounded-xl text-xs font-semibold border transition-all",
-            isAutomationEnabled
-              ? "bg-[rgba(123,53,232,0.18)] border-[rgba(123,53,232,0.35)] text-[#e8e0f0]"
-              : "bg-[rgba(255,255,255,0.03)] border-[rgba(120,50,220,0.18)] text-[#7a6a9a]"
-          )}
-          title={isAutomationEnabled ? 'Automation on' : 'Automation off'}
-        >
-          Auto
-        </button>
-
-        <button
-          onClick={async () => {
-            await playUiClick();
-            setUiSoundsEnabled((v) => {
-              const next = !v;
-              localStorage.setItem('amo_ui_sounds', String(next));
-              return next;
-            });
-          }}
-          className={cn(
-            "ml-2 px-3 py-2 rounded-xl text-xs font-semibold border transition-all",
-            uiSoundsEnabled
-              ? "bg-[rgba(255,255,255,0.03)] border-[rgba(120,50,220,0.18)] text-[#e8e0f0]"
-              : "bg-[rgba(255,255,255,0.02)] border-[rgba(120,50,220,0.12)] text-[#7a6a9a]"
-          )}
-          title={uiSoundsEnabled ? 'UI sounds on' : 'UI sounds off'}
-        >
-          Sound
-        </button>
       </header>
 
       <AnimatePresence>
