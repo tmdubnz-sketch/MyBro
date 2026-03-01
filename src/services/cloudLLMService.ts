@@ -1,4 +1,4 @@
-import { createId } from '../lib/id';
+import { fetch } from '@tauri-apps/plugin-http';
 
 export type Persona = 'Amo' | 'Riri';
 
@@ -33,6 +33,12 @@ class CloudLLMService {
     return this.currentPersona;
   }
 
+  private buildUrl(path: string): string {
+    if (!this.config) return path;
+    const base = this.config.endpoint.replace(/\/v1$/, '');
+    return `${base}${path}`;
+  }
+
   async generate(
     messages: { role: string; content: string }[],
     onChunk?: (text: string) => void
@@ -45,7 +51,7 @@ class CloudLLMService {
     const filtered = messages.filter((m) => m.role !== 'system');
     const allMessages = [{ role: 'system', content: systemMessage }, ...filtered];
 
-    const response = await fetch(`${this.config.endpoint}/v1/chat/completions`, {
+    const response = await fetch(this.buildUrl('/v1/chat/completions'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -59,7 +65,7 @@ class CloudLLMService {
         temperature: 0.7,
         stream: true,
       }),
-    });
+    }) as unknown as Response;
 
     if (!response.ok) {
       const errText = await response.text();
@@ -116,7 +122,7 @@ class CloudLLMService {
     const filtered = messages.filter((m) => m.role !== 'system');
     const allMessages = [{ role: 'system', content: systemMessage }, ...filtered];
 
-    const response = await fetch(`${this.config.endpoint}/v1/chat/completions`, {
+    const response = await fetch(this.buildUrl('/v1/chat/completions'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -128,7 +134,7 @@ class CloudLLMService {
         temperature: opts?.temperature ?? 0.7,
         max_tokens: opts?.max_tokens ?? 256,
       }),
-    });
+    }) as unknown as Response;
 
     if (!response.ok) {
       const errText = await response.text();
