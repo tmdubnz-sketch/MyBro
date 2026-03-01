@@ -21,6 +21,9 @@ class VoiceSwitchService {
 
   constructor() {
     hfEnv.useBrowserCache = true;
+    if (hfEnv.backends?.onnx?.wasm) {
+      hfEnv.backends.onnx.wasm.numThreads = 1;
+    }
   }
 
   async init(): Promise<void> {
@@ -30,16 +33,17 @@ class VoiceSwitchService {
     this.initPromise = (async () => {
       try {
         console.log('[VoiceSwitch] Initializing Whisper for alignment...');
+        // Use WASM for mobile compatibility - WebGPU has driver issues on some Android devices
         this.whisperPipeline = await hfPipeline(
           'automatic-speech-recognition',
           MODELS.stt.whisperTinyEn,
-          { dtype: 'q8', device: 'webgpu' }
+          { dtype: 'q8', device: 'wasm' }
         );
         console.log('[VoiceSwitch] Initializing Kokoro TTS...');
         try {
           this.kokoroTTS = await KokoroTTS.from_pretrained(MODELS.tts.kokoro, {
             dtype: 'q8',
-            device: 'webgpu',
+            device: 'wasm',
           });
         } catch {
           this.kokoroTTS = await KokoroTTS.from_pretrained(MODELS.tts.kokoro, {

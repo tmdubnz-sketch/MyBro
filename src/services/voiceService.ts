@@ -40,6 +40,10 @@ class VoiceService {
   constructor() {
     // Prefer browser cache; allow remote fetches (models are large).
     hfEnv.useBrowserCache = true;
+    // Use WASM backend for mobile compatibility (WebGPU has driver issues on some devices)
+    if (hfEnv.backends?.onnx?.wasm) {
+      hfEnv.backends.onnx.wasm.numThreads = 1;
+    }
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       const synth = window.speechSynthesis;
