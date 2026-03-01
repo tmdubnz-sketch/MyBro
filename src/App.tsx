@@ -15,11 +15,8 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { webLLMService } from './services/webLLMService';
-import { cloudLLMService } from './services/cloudLLMService';
 import { voiceService, VOICE_OPTIONS, type VoiceId } from './services/voiceService';
-import { extractToolCall, type ToolCall, type VoiceMode } from './services/automationTools';
-import { runDiagnostics } from './services/diagnosticsService';
+import type { VoiceMode } from './services/automationTools';
 import { useMessages } from './hooks/useMessages';
 import { MessageList } from './components/MessageList';
 import { type ChatSession } from './types';
@@ -233,54 +230,6 @@ export default function App() {
     setIsModelLoading(false);
   };
 
-  const TOOL_PLANNER_PROMPT =
-    'You can request exactly one tool call by replying with ONLY a JSON object of the form ' +
-    '{"tool":"<name>","args":{...}}. ' +
-    'Allowed tools: create_chat, switch_agent, list_chats, get_status, none. ' +
-    'If no tool is needed, reply with {"tool":"none"} and nothing else.';
-
-  const executeTool = async (call: ToolCall): Promise<{ ok: boolean; result: any }> => {
-    try {
-      switch (call.tool) {
-        case 'none':
-          return { ok: true, result: { message: 'No tool executed' } };
-        case 'create_chat': {
-          const title = typeof call.args?.title === 'string' ? (call.args.title as string) : undefined;
-          const newChat: ChatSession = { id: createId('chat-'), title: title || 'New Chat', messages: [], updatedAt: Date.now() };
-          setChats((prev: ChatSession[]) => [newChat, ...prev]);
-          setCurrentChatId(newChat.id);
-          return { ok: true, result: { chatId: newChat.id, title: newChat.title } };
-        }
-        case 'switch_agent': {
-          const agent = call.args?.agent;
-          if (agent !== 'Amo' && agent !== 'Riri') throw new Error('agent must be Amo or Riri');
-          handleAgentSelect(agent);
-          return { ok: true, result: { agent } };
-        }
-        case 'list_chats': {
-          const list = chats.map((c) => ({ id: c.id, title: c.title, updatedAt: c.updatedAt }));
-          return { ok: true, result: { chats: list } };
-        }
-        case 'get_status': {
-          return {
-            ok: true,
-            result: {
-              isOnline,
-              isModelLoaded,
-              isVoiceReady,
-              voiceMode,
-              agent: livePersona,
-            },
-          };
-        }
-        default:
-          throw new Error('Unknown tool');
-      }
-    } catch (err: any) {
-      return { ok: false, result: { error: err?.message ?? String(err) } };
-    }
-  };
-
   const currentChat = chats.find((c: ChatSession) => c.id === currentChatId) || chats[0];
   const { messages, setMessages, addMessage, appendToMessage, finalizeMessage } = useMessages(currentChat?.messages || []);
 
@@ -331,6 +280,7 @@ export default function App() {
     e.target.style.height = e.target.scrollHeight + 'px';
   };
 
+  // Stub for wire-free test - just echoes user message
   const handleSend = async (overrideText?: string) => {
     const textToSend = (overrideText ?? input).trim();
     if (!textToSend || isLoading) return;
@@ -342,69 +292,17 @@ export default function App() {
     setInput('');
     setIsLoading(true);
 
-    addMessage('user', textToSend || '[Image]');
+    addMessage('user', textToSend);
     const assistantMsgId = addMessage('assistant', '');
 
     try {
-      const chatMessages = messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({ role: m.role, content: m.content }));
-
-      if (isAutomationEnabled) {
-        const planText = await webLLMService.generateOnce(
-          [
-            ...chatMessages,
-            { role: 'user', content: textToSend },
-          ],
-          { temperature: 0, max_tokens: 128, systemPromptAppend: TOOL_PLANNER_PROMPT }
-        );
-
-        const toolCall = extractToolCall(planText);
-        if (toolCall && toolCall.tool !== 'none') {
-          const toolRes = await executeTool(toolCall);
-          const toolMsg = `Tool executed: ${toolCall.tool}\nResult: ${JSON.stringify(toolRes)}`;
-
-          await webLLMService.generate(
-            [
-              ...chatMessages,
-              { role: 'assistant', content: toolMsg },
-              { role: 'user', content: textToSend },
-            ],
-            (chunk) => appendToMessage(assistantMsgId, chunk)
-          );
-        } else {
-          await webLLMService.generate(
-            [...chatMessages, { role: 'user', content: textToSend }],
-            (chunk) => appendToMessage(assistantMsgId, chunk)
-          );
-        }
-      } else {
-        await webLLMService.generate(
-          [...chatMessages, { role: 'user', content: textToSend }],
-          (chunk) => appendToMessage(assistantMsgId, chunk)
-        );
-      }
+      // Wire-free test: echo response
+      const response = `[Test] Received: "${textToSend}"`;
+      appendToMessage(assistantMsgId, response);
     } catch (err: any) {
       appendToMessage(assistantMsgId, `Error: ${err.message}`);
     } finally {
       finalizeMessage(assistantMsgId);
-
-      // Hands-free STS: auto speak the last assistant message.
-      if (voiceMode === 'handsfree' && isVoiceReady) {
-        const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
-        if (lastAssistant?.content) {
-          try {
-            await voiceService.unlockAudio();
-            setIsSpeaking(true);
-            await voiceService.speak(lastAssistant.content);
-          } catch {
-            // ignore
-          } finally {
-            setIsSpeaking(false);
-          }
-        }
-      }
-
       setIsLoading(false);
     }
   };
@@ -420,7 +318,7 @@ export default function App() {
         setIsSpeaking(false);
       }
       if (isLoading) {
-        webLLMService.interrupt();
+        // No AI to interrupt in test mode
         setIsLoading(false);
       }
 
