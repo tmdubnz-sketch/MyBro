@@ -22,6 +22,7 @@ import { MessageList } from './components/MessageList';
 import { type ChatSession } from './types';
 import { cn } from './lib/utils';
 import { createId } from './lib/id';
+import StartupScreen from './components/StartupScreen';
 
 // Wire-free test mode
 
@@ -82,6 +83,12 @@ export default function App() {
     const saved = localStorage.getItem('amo_selected_agent');
     return (saved as 'Amo' | 'Riri') || null;
   });
+  const [ready, setReady] = useState(false);
+  
+  if (!ready) {
+    return <StartupScreen onReady={() => setReady(true)} />;
+  }
+  
   const [isCloudMode, setIsCloudMode] = useState(() => {
     const saved = localStorage.getItem('amo_cloud_enabled');
     return saved === 'true';
