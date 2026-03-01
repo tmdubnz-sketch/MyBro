@@ -192,8 +192,9 @@ export default function App() {
     if (selectedAgent && !isVoiceReady) initVoice();
   }, [selectedAgent, isVoiceReady]);
 
+  // Diagnostics disabled for wire-free test
+  /*
   useEffect(() => {
-    // One-time diagnostics to help catch configuration issues without a settings panel.
     (async () => {
       try {
         const r = await runDiagnostics();
@@ -213,56 +214,23 @@ export default function App() {
       }
     })();
   }, []);
+  */
 
   const loadModel = async () => {
-    if (isModelLoaded || isModelLoading) return;
-    
+    // WIRE-FREE TEST MODE: No AI services loaded
+    // This is a barebones test to verify UI works without any AI
     setIsModelLoading(true);
     setModelProgress(0);
-    setModelStatus('Initializing...');
+    setModelStatus('Testing...');
     setModelError(null);
     
-    if (isCloudMode && cloudEndpoint.trim()) {
-      try {
-        setModelStatus('Connecting to cloud service...');
-        cloudLLMService.configure({
-          endpoint: cloudEndpoint.trim(),
-          apiKey: cloudApiKey.trim(),
-          model: cloudModel.trim() || 'llama3',
-        });
-        cloudLLMService.setPersona(livePersona);
-        setIsModelLoaded(true);
-        setModelProgress(100);
-        showToast('Connected to cloud LLM!', 'success');
-      } catch (err: unknown) {
-        console.error('[Cloud] init failed', err);
-        const msg = describeUnknownError(err);
-        setModelError(msg);
-        showToast('Failed to connect: ' + msg, 'error');
-      } finally {
-        setIsModelLoading(false);
-      }
-      return;
-    }
-    
-    try {
-      await webLLMService.init(
-        livePersona,
-        (progress, message) => {
-          setModelProgress(Math.round(progress * 100));
-          setModelStatus(message);
-        }
-      );
-      setIsModelLoaded(true);
-      showToast('Model loaded successfully!', 'success');
-    } catch (err: unknown) {
-      console.error('[Model] init failed', err);
-      const msg = describeUnknownError(err);
-      setModelError(msg);
-      showToast('Failed to load model: ' + msg, 'error');
-    } finally {
-      setIsModelLoading(false);
-    }
+    // Simulate loading delay
+    await new Promise(r => setTimeout(r, 500));
+    setModelProgress(100);
+    setModelStatus('Ready (test mode)');
+    setIsModelLoaded(true);
+    showToast('Test mode: UI ready', 'info');
+    setIsModelLoading(false);
   };
 
   const TOOL_PLANNER_PROMPT =
