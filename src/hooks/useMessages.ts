@@ -4,6 +4,7 @@
 // role, content, or array index.
 
 import React, { useState, useCallback, useRef } from 'react';
+import { createUuid } from '../lib/id';
 
 export type MessageRole = 'user' | 'assistant' | 'system';
 
@@ -17,12 +18,7 @@ export interface Message {
 }
 
 function generateId(): string {
-  // Use crypto.randomUUID() where available (all modern browsers)
-  // Fall back to timestamp + random for older environments
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  return createUuid();
 }
 
 interface UseMessagesReturn {

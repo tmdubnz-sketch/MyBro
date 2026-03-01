@@ -1,7 +1,0 @@
-{
-  "name": "My Bro",
-  "description": "A private, offline-first chatbot running Riri (Gemma) and Amo (Qwen) models directly in your browser using WebGPU, plus Riri Live Audio.",
-  "requestFramePermissions": [
-    "microphone"
-  ]
-}

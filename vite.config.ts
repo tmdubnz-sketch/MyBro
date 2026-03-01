@@ -1,11 +1,12 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig, loadEnv} from 'vite';
+import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+const host = process.env.TAURI_DEV_HOST;
+
 export default defineConfig(({mode}) => {
-  const env = loadEnv(mode, '.', '');
   return {
     plugins: [
       react(), 
@@ -14,12 +15,12 @@ export default defineConfig(({mode}) => {
         registerType: 'autoUpdate',
         includeAssets: ['icon.svg'],
         workbox: {
-          maximumFileSizeToCacheInBytes: 10 * 1024 * 1024 // 10MB
+          maximumFileSizeToCacheInBytes: 25 * 1024 * 1024 // 25MB - for Whisper/Kokoro models
         },
         manifest: {
           name: 'My Bro',
           short_name: 'My Bro',
-          description: 'Offline-first AI Chat with WebGPU and Gemini Live',
+          description: 'Local-first AI chat with WebGPU and optional voice',
           theme_color: '#0A0A0A',
           background_color: '#0A0A0A',
           display: 'standalone',
@@ -35,18 +36,36 @@ export default defineConfig(({mode}) => {
         }
       })
     ],
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-    },
+    // Never inject server secrets into the client bundle.
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    clearScreen: false,
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
+      port: 5173,
+      strictPort: true,
+      // For mobile development, the dev server must be reachable from the device.
+      // TAURI_DEV_HOST is set by the Tauri CLI; otherwise listen on all interfaces.
+      host: host || true,
+      hmr: host 
+        ? {
+            protocol: 'ws',
+            host,
+            port: 5174,
+          }
+        : undefined,
+      watch: {
+        // Android builds touch generated files under src-tauri/gen; ignoring prevents reload loops.
+        ignored: ['**/src-tauri/**', '**/dist/**'],
+      },
+    },
+    envPrefix: ['VITE_', 'TAURI_'],
+    build: {
+      target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
+      minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
+      sourcemap: !!process.env.TAURI_ENV_DEBUG,
     },
   };
 });

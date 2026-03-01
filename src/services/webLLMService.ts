@@ -1,140 +1,237 @@
-import * as webllm from "@mlc-ai/web-llm";
+import * as webllm from '@mlc-ai/web-llm';
+import { MODELS } from '../config/models';
+import { cloudLLMService } from './cloudLLMService';
 
-export type ProgressCallback = (progress: number, message: string) => void;
+export type Persona = 'Amo' | 'Riri';
+
+function describeUnknownError(err: unknown): string {
+  if (err instanceof Error) {
+    const msg = typeof err.message === 'string' ? err.message : '';
+    return msg.trim() ? msg : err.name;
+  }
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const anyErr = err as any;
+    if (typeof anyErr.message === 'string' && anyErr.message.trim()) return anyErr.message;
+    try {
+      const s = JSON.stringify(err);
+      if (typeof s === 'string' && s.trim()) return s;
+    } catch {
+      // ignore
+    }
+    return Object.prototype.toString.call(err);
+  }
+  const s = String(err);
+  return s.trim() ? s : 'Unknown error';
+}
+
+const PERSONA_PROMPTS: Record<Persona, string> = {
+  Amo: `You are Amo, a helpful AI assistant. You're direct, practical, and concise. You speak in a friendly but professional manner.`,
+  Riri: `You are Riri, a warm and friendly AI assistant. You're conversational, empathetic, and supportive. You respond in a caring tone.`
+};
 
 class WebLLMService {
   private engine: webllm.MLCEngineInterface | null = null;
+  private currentPersona: Persona = 'Amo';
+  private initPromise: Promise<void> | null = null;
+  private worker: Worker | null = null;
   private currentModelId: string | null = null;
 
-  async loadModel(modelId: string, onProgress: ProgressCallback) {
-    if (this.engine && this.currentModelId === modelId) {
+  async init(
+    persona: Persona = 'Amo',
+    onProgress?: (progress: number, message: string) => void
+  ): Promise<void> {
+    if (this.engine) {
+      this.currentPersona = persona;
       return;
     }
-
-    if (this.engine) {
-      await this.engine.unload();
+    
+    if (this.initPromise) {
+      return this.initPromise;
     }
 
-    const initProgressCallback = (report: webllm.InitProgressReport) => {
-      onProgress(report.progress, report.text);
-    };
-
-    const modelList: webllm.ModelRecord[] = [
-      {
-        model: "https://huggingface.co/mlc-ai/Qwen2-VL-2B-Instruct-q4f16_1-MLC",
-        model_id: "Qwen2-VL-2B-Instruct-q4f16_1-MLC",
-        model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/qwen2_vl/Qwen2-VL-2B-Instruct-q4f16_1-ctx2k-webgpu.wasm",
-      },
-      {
-        model: "https://huggingface.co/mlc-ai/gemma-2-2b-it-q4f16_1-MLC",
-        model_id: "gemma-2-2b-it-q4f16_1-MLC",
-        model_lib: "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/gemma2/gemma-2-2b-it-q4f16_1-ctx2k-webgpu.wasm",
-      }
-    ];
-
-    const appConfig: webllm.AppConfig = {
-      model_list: [
-        ...(webllm.prebuiltAppConfig?.model_list || []),
-        ...modelList,
-      ],
-    };
-
-    this.engine = await webllm.CreateMLCEngine(modelId, {
-      initProgressCallback,
-      appConfig,
+    this.initPromise = this._init(persona, onProgress).finally(() => {
+      // Keep initPromise only while initializing; allow retry on failure.
+      if (!this.engine) this.initPromise = null;
     });
-    this.currentModelId = modelId;
+    return this.initPromise;
+  }
+
+  private async _init(
+    persona: Persona,
+    onProgress?: (progress: number, message: string) => void
+  ): Promise<void> {
+    this.currentPersona = persona;
+
+    const progressCallback = (progress: webllm.InitProgressReport) => {
+      console.log('[WebLLM]', progress.text);
+      onProgress?.(progress.progress, progress.text);
+    };
+
+    const candidates = Array.isArray((MODELS.llm as any).amoCandidates)
+      ? ((MODELS.llm as any).amoCandidates as string[])
+      : [MODELS.llm.amo];
+
+    // Validate candidates exist in the installed WebLLM prebuilt list.
+    const list = (webllm as any)?.prebuiltAppConfig?.model_list as any[] | undefined;
+    if (list) {
+      const missing = candidates.filter((id) => !list.some((m) => m?.model_id === id));
+      if (missing.length > 0) {
+        console.warn('[WebLLM] Some configured modelIds are missing from prebuiltAppConfig:', missing);
+      }
+    }
+    
+    if (!this.worker) {
+      this.worker = new Worker(new URL('../workers/webllm.worker.ts', import.meta.url), { type: 'module' });
+    }
+
+    let lastErr: unknown = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const modelId = candidates[i]!;
+      try {
+        onProgress?.(0, `Initializing model (${i + 1}/${candidates.length}): ${modelId}`);
+        this.engine = await webllm.CreateWebWorkerMLCEngine(this.worker, modelId, {
+          initProgressCallback: progressCallback,
+        });
+        this.currentModelId = modelId;
+        console.log('[WebLLM] Engine initialized with', modelId);
+        return;
+      } catch (err) {
+        lastErr = err;
+        this.engine = null;
+        this.currentModelId = null;
+        console.error('[WebLLM] CreateWebWorkerMLCEngine failed for', modelId, err);
+        onProgress?.(0, `Model init failed for ${modelId}. Trying fallback...`);
+      }
+    }
+
+    throw new Error(
+      `WebLLM init failed for all candidates (${candidates.join(', ')}): ${describeUnknownError(lastErr)}`
+    );
+  }
+
+  private normalizeMessages(messages: { role: string; content: string }[]): { role: string; content: string }[] {
+    // WebLLM expects the system prompt (if any) to be the very first message.
+    // This service owns the system prompt, so we strip any incoming system messages.
+    return messages.filter((m) => m.role !== 'system');
+  }
+
+  // generate/generateOnce/interrupt/isReady are defined after isCloudMode below
+  // to support auto-switching between local WebLLM and cloud Ollama.
+
+  getModelId(): string | null {
+    return this.currentModelId;
+  }
+
+  setPersona(persona: Persona): void {
+    this.currentPersona = persona;
+    cloudLLMService.setPersona(persona);
+  }
+
+  getPersona(): Persona {
+    return this.currentPersona;
+  }
+
+  isCloudMode(): boolean {
+    return cloudLLMService.isConfigured();
   }
 
   async generate(
-    messages: { role: string; content: string; image?: string }[],
-    botName: string,
-    onUpdate: (text: string) => void,
-    context?: string
-  ) {
-    if (!this.engine) throw new Error("Engine not initialized");
+    messages: { role: string; content: string }[],
+    onChunk?: (text: string) => void,
+    opts?: { systemPromptAppend?: string }
+  ): Promise<string> {
+    if (cloudLLMService.isConfigured()) {
+      return cloudLLMService.generate(messages, onChunk);
+    }
+    return this._localGenerate(messages, onChunk, opts);
+  }
 
-    let persona = "";
-    if (botName === 'Amo') {
-      persona = "Your name is Te Amo (pronounced Teh Ahh-maw), but you go by the nickname Amo (pronounced Ahh-maw). You have a deeper tone and husky timbre. Your personality is professional, serious, grounded, and highly respectful, carrying the mana (prestige/authority) of your Māori heritage.";
-    } else if (botName === 'Riri') {
-      persona = "Your name is Riana, but you go by the nickname Riri (pronounced re-ree). Your personality is warm, laid-back, friendly, and highly expressive.";
-    } else {
-      persona = `You are ${botName}.`;
+  async generateOnce(
+    messages: { role: string; content: string }[],
+    opts?: { temperature?: number; top_p?: number; max_tokens?: number; systemPromptAppend?: string }
+  ): Promise<string> {
+    if (cloudLLMService.isConfigured()) {
+      return cloudLLMService.generateOnce(messages, opts);
+    }
+    return this._localGenerateOnce(messages, opts);
+  }
+
+  private async _localGenerate(
+    messages: { role: string; content: string }[],
+    onChunk?: (text: string) => void,
+    opts?: { systemPromptAppend?: string }
+  ): Promise<string> {
+    if (!this.engine) {
+      throw new Error('Engine not initialized');
     }
 
-    const pronunciationRules = `
-Māori pronunciation is consistent and phonetic, meaning each letter and sound is pronounced the same way every time.
-Vowels are short and clear:
-a like "ah" in "father"
-e like "e" in "bed"
-i like "ee" in "see"
-o like "o" in "more"
-u like "oo" in "moon"
-Long vowels (with macrons: ā, ē, ī, ō, ū) are held longer:
-ā like "car", ē like "led", ī like "peep", ō like "pork", ū like "loot"
-Digraphs (two letters that make one sound):
-ng sounds like the "ng" in "sing" — do not say "in-ga"
-wh is pronounced like "f" — not the English "w" sound
-Special consonants:
-r is a soft rolled "r", like a gentle "dd" in "judder" or a kiwi accent on "butter"
-o is soft (like "d") before a, e, o; sharper (like "t") before i, u
-Key rules:
-Every Māori word ends in a vowel.
-Break words into syllables using vowels: e.g., whānau = whā-na-u.
-Practice diphthongs (two vowels together) by saying them separately first: au = "a...u", rhymes with "no".
-For English words, ensure they are pronounced as proper English but with a natural New Zealand Māori accent.
-`;
+    const systemMessage = PERSONA_PROMPTS[this.currentPersona] + (opts?.systemPromptAppend ? `\n\n${opts.systemPromptAppend}` : '');
+    const allMessages = [{ role: 'system', content: systemMessage }, ...this.normalizeMessages(messages)];
 
-    const contextMessage = context ? `\n\nCONTEXT FROM USER DOCUMENTS:\n${context}\n\nUse the above context to answer the user's question if relevant. If the context doesn't contain the answer, ignore it.` : "";
-
-    const systemMessage = {
-      role: "system",
-      content: `${persona} You are a highly responsive AI with a strong New Zealand Māori persona. Keep answers brief, natural, and conversational. NEVER use Australian terms like "mate" or "how's it going". Instead, use "bro", "cuz", "whānau" (pronounced faa-no), or "e hoa" (friend, pronounced eh ho-a). Naturally incorporate common Te Reo Māori words and authentic New Zealand slang. IMPORTANT SLANG RULES: Use "Hard" as a quick response to mean "I agree" (short for hardout). Use "As" to mean "definitely" or to emphasize. Use "Kia ora" (kee-a-or-a) for greetings, "chur" for thanks, "tu meke" (too meh-keh) for awesome, and "yeah nah" for a polite no. Treat the user with respect and cultural authenticity. Avoid markdown formatting like bold or lists, as your responses will be spoken out loud. ${pronunciationRules}${contextMessage}`
-    };
-
-    const formattedMessages = messages.map(m => {
-      if (m.image) {
-        return {
-          role: m.role,
-          content: [
-            { type: "text", text: m.content || "Analyze this image." },
-            { type: "image_url", image_url: { url: m.image } }
-          ]
-        };
-      }
-      return { role: m.role, content: m.content };
-    });
-
-    const chunks = await this.engine.chat.completions.create({
-      messages: [systemMessage, ...formattedMessages] as any,
+    const chunks: string[] = [];
+    
+    const stream = await this.engine.chat.completions.create({
+      messages: allMessages as any,
+      temperature: 0.7,
+      top_p: 0.9,
       stream: true,
-      temperature: 0.5,
-      max_tokens: 256,
     });
 
-    let fullText = "";
-    for await (const chunk of chunks) {
-      const content = chunk.choices[0]?.delta?.content || "";
-      fullText += content;
-      onUpdate(fullText);
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        chunks.push(content);
+        onChunk?.(content);
+      }
     }
-    return fullText;
+
+    return chunks.join('');
   }
 
-  async interrupt() {
-    if (this.engine) {
-      await this.engine.interruptGenerate();
+  private async _localGenerateOnce(
+    messages: { role: string; content: string }[],
+    opts?: { temperature?: number; top_p?: number; max_tokens?: number; systemPromptAppend?: string }
+  ): Promise<string> {
+    if (!this.engine) {
+      throw new Error('Engine not initialized');
     }
+
+    const systemMessage = PERSONA_PROMPTS[this.currentPersona] + (opts?.systemPromptAppend ? `\n\n${opts.systemPromptAppend}` : '');
+    const allMessages = [{ role: 'system', content: systemMessage }, ...this.normalizeMessages(messages)];
+
+    const res = await this.engine.chat.completions.create({
+      messages: allMessages as any,
+      temperature: opts?.temperature ?? 0,
+      top_p: opts?.top_p ?? 1,
+      max_tokens: opts?.max_tokens ?? 256,
+    } as any);
+
+    const content = (res as any)?.choices?.[0]?.message?.content;
+    return typeof content === 'string' ? content : '';
   }
 
-  async unload() {
-    if (this.engine) {
-      await this.engine.unload();
-      this.engine = null;
-      this.currentModelId = null;
+  interrupt(): void {
+    if (cloudLLMService.isConfigured()) {
+      return; // Cloud doesn't support interrupt
     }
+    this.engine?.interruptGenerate();
+  }
+
+  isReady(): boolean {
+    return cloudLLMService.isConfigured() || this.engine !== null;
   }
 }
 
-export const webLLMService = new WebLLMService();
+const globalForWebLLMService = globalThis as unknown as {
+  __MYBRO_WEBLLM_SERVICE__?: WebLLMService;
+};
+
+// In dev (HMR/React Refresh), an older instance may persist on globalThis.
+// If its shape is outdated (e.g. missing newer methods), replace it.
+const existing = globalForWebLLMService.__MYBRO_WEBLLM_SERVICE__ as any;
+if (!existing || typeof existing.generateOnce !== 'function' || typeof existing.interrupt !== 'function') {
+  globalForWebLLMService.__MYBRO_WEBLLM_SERVICE__ = new WebLLMService();
+}
+
+export const webLLMService = globalForWebLLMService.__MYBRO_WEBLLM_SERVICE__!;

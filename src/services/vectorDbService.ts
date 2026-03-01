@@ -1,8 +1,13 @@
-import { pipeline, env } from '@xenova/transformers';
+import { pipeline, env } from '@huggingface/transformers';
+import { MODELS } from '../config/models';
+import initSqlJs from '@sqlite.org/sqlite-wasm';
 
-// Configure transformers.js for local use
-env.allowLocalModels = false;
+// Prefer local models for offline-first operation.
 env.useBrowserCache = true;
+(env as any).localModelPath = '/models/';
+if ('allowRemoteModels' in (env as any)) {
+  (env as any).allowRemoteModels = false;
+}
 
 export interface VectorDocument {
   id: string;
@@ -13,17 +18,74 @@ export interface VectorDocument {
   metadata: any;
 }
 
+type SqliteDatabase = any;
+
 export class VectorDbService {
   private extractor: any = null;
-  private documents: VectorDocument[] = [];
+  private db: SqliteDatabase | null = null;
   private isInitialized: boolean = false;
+  private initPromise: Promise<void> | null = null;
 
-  async init() {
+  async init(): Promise<void> {
     if (this.isInitialized) return;
-    
-    // Use a small, efficient model for embeddings
-    this.extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = this._init();
+    await this.initPromise;
+  }
+
+  private async _init(): Promise<void> {
+    const SQL: any = await initSqlJs();
+
+    let data: Uint8Array | null = null;
+    try {
+      const opfsRoot = await navigator.storage.getDirectory();
+      const fileHandle = await opfsRoot.getFileHandle('vector_db.sqlite', { create: true });
+      const file = await fileHandle.getFile();
+      data = new Uint8Array(await file.arrayBuffer());
+    } catch {
+      console.log('[VectorDb] No existing OPFS data, starting fresh');
+    }
+
+    if (data && data.byteLength > 0) {
+      this.db = new SQL.Database(data);
+    } else {
+      this.db = new SQL.Database();
+    }
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL,
+        document_name TEXT NOT NULL,
+        content TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        metadata TEXT,
+        created_at INTEGER DEFAULT (unixepoch())
+      )
+    `);
+
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_document_id ON documents(document_id)`);
+
+    this.extractor = await pipeline('feature-extraction', MODELS.embeddings.miniLm as any);
     this.isInitialized = true;
+    console.log('[VectorDb] Initialized with OPFS storage');
+  }
+
+  private async saveToOpfs(): Promise<void> {
+    if (!this.db) return;
+    const data = this.db.export();
+    const buffer = new Uint8Array(data);
+    
+    try {
+      const opfsRoot = await navigator.storage.getDirectory();
+      const fileHandle = await opfsRoot.getFileHandle('vector_db.sqlite', { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(buffer);
+      await writable.close();
+    } catch (err) {
+      console.error('[VectorDb] Failed to save to OPFS:', err);
+    }
   }
 
   async generateEmbedding(text: string): Promise<number[]> {
@@ -37,47 +99,71 @@ export class VectorDbService {
     return Array.from(output.data);
   }
 
-  async addDocument(doc: Omit<VectorDocument, 'embedding'>) {
+  async addDocument(doc: Omit<VectorDocument, 'embedding'>): Promise<void> {
+    if (!this.isInitialized) await this.init();
+    if (!this.db) throw new Error('Database not initialized');
+
     const embedding = await this.generateEmbedding(doc.content);
-    const fullDoc = { ...doc, embedding };
-    this.documents.push(fullDoc);
+    const embeddingBlob = new Float32Array(embedding);
     
-    // In a real app with OPFS-backed SQLite, we would save to SQLite here.
-    // For this demo, we'll keep it in memory but simulate the interface.
-    this.saveToStorage();
+    this.db.run(
+      `INSERT INTO documents (id, document_id, document_name, content, embedding, metadata) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        doc.id,
+        doc.documentId,
+        doc.documentName,
+        doc.content,
+        embeddingBlob,
+        JSON.stringify(doc.metadata || {})
+      ]
+    );
+
+    await this.saveToOpfs();
   }
 
-  private saveToStorage() {
-    // Simulate saving to OPFS/SQLite
-    localStorage.setItem('vector_db_docs', JSON.stringify(this.documents));
+  async loadFromStorage(): Promise<void> {
+    await this.init();
   }
 
-  async loadFromStorage() {
-    const saved = localStorage.getItem('vector_db_docs');
-    if (saved) {
-      this.documents = JSON.parse(saved);
-    }
-  }
-
-  removeDocument(documentId: string) {
-    this.documents = this.documents.filter(doc => doc.documentId !== documentId);
-    this.saveToStorage();
+  removeDocument(documentId: string): void {
+    if (!this.db) return;
+    this.db.run('DELETE FROM documents WHERE document_id = ?', [documentId]);
+    this.saveToOpfs();
   }
 
   async search(query: string, limit: number = 3): Promise<VectorDocument[]> {
     if (!this.isInitialized) await this.init();
+    if (!this.db) throw new Error('Database not initialized');
     
     const queryEmbedding = await this.generateEmbedding(query);
     
-    const results = this.documents
+    const results = this.db.exec(`
+      SELECT id, document_id, document_name, content, embedding, metadata 
+      FROM documents
+    `);
+
+    if (!results.length || !results[0].values.length) {
+      return [];
+    }
+
+    const docs: VectorDocument[] = results[0].values.map((row: any) => {
+      return {
+        id: row[0],
+        documentId: row[1],
+        documentName: row[2],
+        content: row[3],
+        embedding: Array.from(new Float32Array(row[4])),
+        metadata: JSON.parse(row[5] || '{}')
+      };
+    });
+
+    return docs
       .map(doc => ({
         ...doc,
         similarity: this.cosineSimilarity(queryEmbedding, doc.embedding)
       }))
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, limit);
-      
-    return results;
   }
 
   private cosineSimilarity(vecA: number[], vecB: number[]): number {
@@ -94,13 +180,28 @@ export class VectorDbService {
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 
-  clear() {
-    this.documents = [];
-    localStorage.removeItem('vector_db_docs');
+  clear(): void {
+    if (!this.db) return;
+    this.db.run('DELETE FROM documents');
+    this.saveToOpfs();
   }
 
-  getDocuments() {
-    return this.documents;
+  getDocuments(): VectorDocument[] {
+    if (!this.db) return [];
+    
+    const results = this.db.exec(`SELECT id, document_id, document_name, content, embedding, metadata FROM documents`);
+    if (!results.length || !results[0].values.length) return [];
+
+    return results[0].values.map((row: any) => {
+      return {
+        id: row[0],
+        documentId: row[1],
+        documentName: row[2],
+        content: row[3],
+        embedding: Array.from(new Float32Array(row[4])),
+        metadata: JSON.parse(row[5] || '{}')
+      };
+    });
   }
 }
 

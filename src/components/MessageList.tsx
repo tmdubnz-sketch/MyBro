@@ -13,7 +13,7 @@ interface MessageListProps {
 
 export function MessageList({ messages, assistantName = 'Assistant', onCopy, onRegenerate }: MessageListProps) {
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-6 scroll-smooth">
+    <div className="space-y-6">
       {messages.map((message) => (
         <MessageBubble 
           key={message.id} 
@@ -51,11 +51,11 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         isUser ? "ml-auto items-end" : "mr-auto items-start"
       )}
     >
-      <div className={cn(
+<div className={cn(
         "px-4 py-3 rounded-2xl text-sm leading-relaxed shadow-sm",
         isUser 
-          ? "bg-emerald-500 text-black rounded-tr-none" 
-          : "bg-[#1A1A1A] text-[#E0E0E0] border border-white/10 rounded-tl-none"
+          ? "bg-gradient-to-r from-[#7b35e8] to-[#e040fb] text-white rounded-tr-none" 
+          : "bg-[#111115] text-[#e8e0f0] border border-[rgba(123,53,232,0.25)] rounded-tl-none"
       )}>
         {message.image && (
           <img 
@@ -67,14 +67,14 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
         )}
         <div className="whitespace-pre-wrap">
           {message.content}
-          {message.isStreaming && (
-            <span className="inline-block w-1.5 h-4 ml-1 bg-emerald-500 animate-pulse align-middle" />
+{message.isStreaming && (
+            <span className="inline-block w-1.5 h-4 ml-1 bg-[#a855f7] animate-pulse align-middle" />
           )}
           {!message.content && message.isStreaming && (
             <div className="flex gap-1 py-1">
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-bounce" />
+              <span className="w-1.5 h-1.5 bg-[#a855f7] rounded-full animate-bounce [animation-delay:-0.3s]" />
+              <span className="w-1.5 h-1.5 bg-[#a855f7] rounded-full animate-bounce [animation-delay:-0.15s]" />
+              <span className="w-1.5 h-1.5 bg-[#a855f7] rounded-full animate-bounce" />
             </div>
           )}
         </div>
