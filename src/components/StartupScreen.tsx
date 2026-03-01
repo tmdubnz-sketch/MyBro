@@ -58,60 +58,71 @@ export default function StartupScreen({ onReady }: StartupScreenProps) {
     let cancelled = false;
 
     async function init() {
-      const missing: string[] = await invoke("check_models");
-
-      if (missing.length === 0) {
-        setStatusText("All systems ready");
-        setOverallPercent(100);
-        await delay(900);
+      // Check if Tauri API is available
+      if (typeof window !== 'undefined' && !(window as any).__TAURI__) {
+        console.log('[Startup] Not in Tauri, skipping model check');
         if (!cancelled) onReady();
         return;
       }
 
-      const initialStates: ModelState[] = missing.map(id => ({
-        id,
-        name: MODEL_REGISTRY[id] ?? id,
-        percent: 0,
-        status: "pending",
-        downloaded: 0,
-        total: 0,
-      }));
-      setModels(initialStates);
-      setPhase("downloading");
-      setStatusText("Downloading required models");
+      try {
+        const missing: string[] = await invoke("check_models");
 
-      const unlisten1 = await listen<DownloadProgress>("download-progress", (event) => {
-        const p = event.payload;
-        setModels(prev => {
-          const updated = prev.map(m =>
-            m.id === p.model_id
-              ? { ...m, percent: p.percent, status: p.status as any, downloaded: p.downloaded, total: p.total }
-              : m
-          );
-          const total = updated.reduce((sum, m) => sum + m.percent, 0);
-          setOverallPercent(Math.round(total / updated.length));
-          return updated;
-        });
-      });
-
-      const unlisten2 = await listen<ModelsReady>("models-ready", async (event) => {
-        if (event.payload.success) {
-          setStatusText("Ready. Let's go");
+        if (missing.length === 0) {
+          setStatusText("All systems ready");
           setOverallPercent(100);
-          await delay(1200);
+          await delay(900);
           if (!cancelled) onReady();
+          return;
         }
-      });
 
-      unlistenRefs.current = [unlisten1, unlisten2];
+        const initialStates: ModelState[] = missing.map(id => ({
+          id,
+          name: MODEL_REGISTRY[id] ?? id,
+          percent: 0,
+          status: "pending",
+          downloaded: 0,
+          total: 0,
+        }));
+        setModels(initialStates);
+        setPhase("downloading");
+        setStatusText("Downloading required models");
 
-      await invoke("start_model_downloads");
+        const unlisten1 = await listen<DownloadProgress>("download-progress", (event) => {
+          const p = event.payload;
+          setModels(prev => {
+            const updated = prev.map(m =>
+              m.id === p.model_id
+                ? { ...m, percent: p.percent, status: p.status as any, downloaded: p.downloaded, total: p.total }
+                : m
+            );
+            const total = updated.reduce((sum, m) => sum + m.percent, 0);
+            setOverallPercent(Math.round(total / updated.length));
+            return updated;
+          });
+        });
+
+        const unlisten2 = await listen<ModelsReady>("models-ready", async (event) => {
+          if (event.payload.success) {
+            setStatusText("Ready. Let's go");
+            setOverallPercent(100);
+            await delay(1200);
+            if (!cancelled) onReady();
+          }
+        });
+
+        unlistenRefs.current = [unlisten1, unlisten2];
+
+        await invoke("start_model_downloads");
+      } catch (err) {
+        console.error("Startup error:", err);
+        setStatusText("Error during startup");
+        // Still proceed to chat on error
+        if (!cancelled) onReady();
+      }
     }
 
-    init().catch(err => {
-      console.error("Startup error:", err);
-      setStatusText("Error during startup");
-    });
+    init();
 
     return () => {
       cancelled = true;
