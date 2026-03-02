@@ -1,9 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { createUuid } from '../lib/id';
 
-// Bundle the PDF.js worker (offline-friendly; avoids CDN).
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
+// Set worker path for pdfjs-dist
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 export interface DocumentChunk {
   id: string;
@@ -57,7 +55,7 @@ export class DocumentService {
       const chunkContent = content.substring(start, end);
       
       chunks.push({
-        id: createUuid(),
+        id: crypto.randomUUID(),
         documentId,
         documentName,
         content: chunkContent,
